@@ -63,7 +63,8 @@ fun OpenBulletDialogHost(
     onOpenAddWordlistDialog: () -> Unit,
     onCreateConfig: (name: String, author: String, category: String, wordlistType: String, needsProxies: Boolean, script: String) -> Unit,
     onCreateWordlist: (name: String, type: String, purpose: String, rawText: String) -> Unit,
-    onImportProxies: (rawText: String, protocol: ProxyProtocol) -> Unit
+    onImportProxies: (rawText: String, protocol: ProxyProtocol) -> Unit,
+    onImportProxiesFromUrl: (url: String, protocol: ProxyProtocol) -> Unit
 ) {
     when (activeDialog) {
         ActiveDialog.None -> Unit
@@ -265,6 +266,7 @@ fun OpenBulletDialogHost(
         ActiveDialog.AddProxies -> {
             var protocol by remember { mutableStateOf(ProxyProtocol.HTTP) }
             var rawText by remember { mutableStateOf("") }
+            var remoteUrl by remember { mutableStateOf("") }
 
             ObDialogFrame(title = "Import Proxies", onDismiss = onDismiss) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -276,6 +278,20 @@ fun OpenBulletDialogHost(
                         ) {
                             Text(p.label, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
                         }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = remoteUrl,
+                        onValueChange = { remoteUrl = it },
+                        label = { Text("Remote List URL (optional)") },
+                        singleLine = true,
+                        colors = dialogFieldColors(),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    ObBorderedButton(onClick = { onImportProxiesFromUrl(remoteUrl, protocol) }) {
+                        Text("Fetch", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 OutlinedTextField(

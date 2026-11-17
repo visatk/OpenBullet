@@ -1,11 +1,13 @@
 package com.example.viewmodel
 
+import android.app.Application
 import android.util.Base64
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkInfo
+import com.example.data.OpenBulletRepository
 import com.example.model.ActiveDialog
 import com.example.model.ConfigItem
-import com.example.model.HitDbItem
 import com.example.model.MainTab
 import com.example.model.OpenBulletUiState
 import com.example.model.ProxyItem
@@ -18,26 +20,255 @@ import com.example.model.SettingsSection
 import com.example.model.ToolsSection
 import com.example.model.WordlistItem
 import com.example.model.WorkerRow
+import com.example.nativeengine.NativeScannerBridge
+import com.example.network.LoliScriptParser
 import com.example.ui.theme.ObColors
+import com.example.worker.ProxyCheckWorker
+import com.example.worker.RunnerJobWorker
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class OpenBulletViewModel : ViewModel() {
+class OpenBulletViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(OpenBulletUiState())
+    private val repository = OpenBulletRepository(application)
+
+    private val _uiState = MutableStateFlow(
+        OpenBulletUiState(
+            nativeEngineBanner = NativeScannerBridge.engineBanner()
+        )
+    )
     val uiState: StateFlow<OpenBulletUiState> = _uiState.asStateFlow()
 
-    private var runnerJob: Job? = null
+    private var lastObservedWorkLog: String? = null
+    private var lastWorkerPacket: String? = null
+    private var lastResultPacket: String? = null
+
+    init {
+        observeRoomStreams()
+        observeWorkManagerStreams()
+    }
+
+    private fun observeRoomStreams() {
+        viewModelScope.launch {
+            repository.configsFlow.collect { configs ->
+                _uiState.update { current ->
+                    val updatedSelected = current.selectedConfig?.let { sel ->
+                        configs.firstOrNull { it.id == sel.id }
+                    }
+                    val updatedPreviewId = current.selectedConfigPreviewId?.takeIf { id ->
+                        configs.any { it.id == id }
+                    } ?: configs.firstOrNull()?.id
+                    current.copy(
+                        configs = configs,
+                        selectedConfig = updatedSelected,
+                        selectedConfigPreviewId = updatedPreviewId
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.wordlistsFlow.collect { wordlists ->
+                _uiState.update { current ->
+                    val updatedSelected = current.selectedWordlist?.let { sel ->
+                        wordlists.firstOrNull { it.id == sel.id }
+                    }
+                    current.copy(
+                        wordlists = wordlists,
+                        selectedWordlist = updatedSelected
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.proxiesFlow.collect { proxies ->
+                _uiState.update { current ->
+                    current.copy(
+                        proxies = proxies,
+                        stats = recalculateProxyStats(proxies, current.stats)
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.hitsDbFlow.collect { hits ->
+                _uiState.update { it.copy(hitsDb = hits) }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.settingsFlow.collect { entity ->
+                if (entity != null) {
+                    _uiState.update { current ->
+                        current.copy(
+                            settings = entity.toSettingsState(current.settings),
+                            startLine = entity.startLine,
+                            botsCount = entity.botsCount,
+                            proxyMode = runCatching { ProxyMode.valueOf(entity.proxyMode) }.getOrDefault(ProxyMode.DEF)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun observeWorkManagerStreams() {
+        viewModelScope.launch {
+            repository.observeRunnerWork().collect { infos ->
+                val info = infos.firstOrNull() ?: return@collect
+                when (info.state) {
+                    WorkInfo.State.ENQUEUED,
+                    WorkInfo.State.BLOCKED -> {
+                        _uiState.update { it.copy(isRunning = true) }
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        val p = info.progress
+                        val currentCount = p.getInt(RunnerJobWorker.KEY_CURRENT, _uiState.value.progressCurrent)
+                        val totalCount = p.getInt(RunnerJobWorker.KEY_TOTAL, _uiState.value.progressTotal)
+                        val hits = p.getInt(RunnerJobWorker.KEY_HITS, _uiState.value.stats.dataHits)
+                        val custom = p.getInt(RunnerJobWorker.KEY_CUSTOM, _uiState.value.stats.dataCustom)
+                        val bad = p.getInt(RunnerJobWorker.KEY_BAD, _uiState.value.stats.dataBad)
+                        val retries = p.getInt(RunnerJobWorker.KEY_RETRIES, _uiState.value.stats.dataRetries)
+                        val toCheck = p.getInt(RunnerJobWorker.KEY_TO_CHECK, _uiState.value.stats.dataToCheck)
+                        val cpm = p.getInt(RunnerJobWorker.KEY_CPM, _uiState.value.stats.cpm)
+                        val elapsed = p.getLong(RunnerJobWorker.KEY_ELAPSED_SEC, _uiState.value.elapsedSeconds)
+                        val packedWorkers = p.getString(RunnerJobWorker.KEY_WORKERS_PACKED).orEmpty()
+                        val packedResults = p.getString(RunnerJobWorker.KEY_RESULTS_PACKED).orEmpty()
+                        val logLine = p.getString(RunnerJobWorker.KEY_LOG_LINE)
+
+                        _uiState.update { state ->
+                            val nextLogs = if (!logLine.isNullOrBlank() && logLine != lastObservedWorkLog) {
+                                lastObservedWorkLog = logLine
+                                appendLog(state, logLine)
+                            } else state.consoleLogs
+
+                            val nextWorkers = if (packedWorkers.isNotEmpty() && packedWorkers != lastWorkerPacket) {
+                                lastWorkerPacket = packedWorkers
+                                unpackWorkers(packedWorkers)
+                            } else state.workerRows
+
+                            val nextResults = if (packedResults.isNotEmpty() && packedResults != lastResultPacket) {
+                                lastResultPacket = packedResults
+                                (state.resultRows + unpackResults(packedResults)).takeLast(250)
+                            } else state.resultRows
+
+                            state.copy(
+                                isRunning = true,
+                                progressCurrent = currentCount,
+                                progressTotal = totalCount,
+                                elapsedSeconds = elapsed,
+                                workerRows = nextWorkers,
+                                resultRows = nextResults,
+                                consoleLogs = nextLogs,
+                                stats = state.stats.copy(
+                                    dataTotal = totalCount,
+                                    dataHits = hits,
+                                    dataCustom = custom,
+                                    dataBad = bad,
+                                    dataRetries = retries,
+                                    dataToCheck = toCheck,
+                                    cpm = cpm
+                                )
+                            )
+                        }
+                    }
+                    WorkInfo.State.SUCCEEDED -> {
+                        val out = info.outputData
+                        val logLine = out.getString(RunnerJobWorker.KEY_LOG_LINE)
+                        val currentCount = out.getInt(RunnerJobWorker.KEY_CURRENT, _uiState.value.progressCurrent)
+                        val totalCount = out.getInt(RunnerJobWorker.KEY_TOTAL, _uiState.value.progressTotal)
+                        val hits = out.getInt(RunnerJobWorker.KEY_HITS, _uiState.value.stats.dataHits)
+                        val custom = out.getInt(RunnerJobWorker.KEY_CUSTOM, _uiState.value.stats.dataCustom)
+                        val bad = out.getInt(RunnerJobWorker.KEY_BAD, _uiState.value.stats.dataBad)
+                        val retries = out.getInt(RunnerJobWorker.KEY_RETRIES, _uiState.value.stats.dataRetries)
+                        val toCheck = out.getInt(RunnerJobWorker.KEY_TO_CHECK, _uiState.value.stats.dataToCheck)
+                        val cpm = out.getInt(RunnerJobWorker.KEY_CPM, _uiState.value.stats.cpm)
+                        val elapsed = out.getLong(RunnerJobWorker.KEY_ELAPSED_SEC, _uiState.value.elapsedSeconds)
+
+                        _uiState.update { state ->
+                            val wasRunning = state.isRunning
+                            val nextLogs = if (wasRunning && !logLine.isNullOrBlank() && logLine != lastObservedWorkLog) {
+                                lastObservedWorkLog = logLine
+                                appendLog(state, logLine)
+                            } else state.consoleLogs
+
+                            state.copy(
+                                isRunning = false,
+                                progressCurrent = if (wasRunning) currentCount else state.progressCurrent,
+                                progressTotal = if (wasRunning) totalCount else state.progressTotal,
+                                elapsedSeconds = if (wasRunning) elapsed else state.elapsedSeconds,
+                                consoleLogs = nextLogs,
+                                stats = if (wasRunning) {
+                                    state.stats.copy(
+                                        dataTotal = totalCount,
+                                        dataHits = hits,
+                                        dataCustom = custom,
+                                        dataBad = bad,
+                                        dataRetries = retries,
+                                        dataToCheck = toCheck,
+                                        cpm = cpm
+                                    )
+                                } else state.stats
+                            )
+                        }
+                    }
+                    WorkInfo.State.CANCELLED,
+                    WorkInfo.State.FAILED -> {
+                        _uiState.update { state ->
+                            if (!state.isRunning) return@update state
+                            val reason = if (info.state == WorkInfo.State.CANCELLED) {
+                                "Runner job stopped."
+                            } else {
+                                "Runner job failed."
+                            }
+                            state.copy(
+                                isRunning = false,
+                                consoleLogs = appendLog(state, reason)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.observeProxyCheckWork().collect { infos ->
+                val info = infos.firstOrNull() ?: return@collect
+                when (info.state) {
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
+                        _uiState.update {
+                            it.copy(isCheckingProxies = true, proxyCheckStatusText = "Queued...")
+                        }
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        val checked = info.progress.getInt(ProxyCheckWorker.KEY_CHECKED, 0)
+                        val total = info.progress.getInt(ProxyCheckWorker.KEY_TOTAL, 0)
+                        _uiState.update {
+                            it.copy(
+                                isCheckingProxies = true,
+                                proxyCheckStatusText = "Checking $checked / $total"
+                            )
+                        }
+                    }
+                    WorkInfo.State.SUCCEEDED, WorkInfo.State.CANCELLED, WorkInfo.State.FAILED -> {
+                        _uiState.update {
+                            it.copy(isCheckingProxies = false, proxyCheckStatusText = "")
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fun selectTab(tab: MainTab) {
         _uiState.update { current ->
@@ -77,11 +308,13 @@ class OpenBulletViewModel : ViewModel() {
     fun updateStartLine(value: Int) {
         val clamped = value.coerceIn(1, 1000)
         _uiState.update { it.copy(startLine = clamped) }
+        viewModelScope.launch { repository.saveSettings { it.copy(startLine = clamped) } }
     }
 
     fun updateBotsCount(value: Int) {
         val clamped = value.coerceIn(1, 200)
         _uiState.update { it.copy(botsCount = clamped) }
+        viewModelScope.launch { repository.saveSettings { it.copy(botsCount = clamped) } }
     }
 
     fun selectProxyMode(mode: ProxyMode) {
@@ -91,6 +324,7 @@ class OpenBulletViewModel : ViewModel() {
                 consoleLogs = appendLog(current, "Proxy mode set to ${mode.label}")
             )
         }
+        viewModelScope.launch { repository.saveSettings { it.copy(proxyMode = mode.name) } }
     }
 
     fun selectResultTab(tab: ResultTab) {
@@ -107,11 +341,7 @@ class OpenBulletViewModel : ViewModel() {
 
     fun selectConfig(config: ConfigItem?) {
         _uiState.update { current ->
-            val msg = if (config != null) {
-                "Loaded config: ${config.name}"
-            } else {
-                "Cleared selected config"
-            }
+            val msg = if (config != null) "Loaded config: ${config.name}" else "Cleared selected config"
             current.copy(
                 selectedConfig = config,
                 activeDialog = ActiveDialog.None,
@@ -123,11 +353,7 @@ class OpenBulletViewModel : ViewModel() {
     fun selectWordlist(wordlist: WordlistItem?) {
         _uiState.update { current ->
             val total = wordlist?.lineCount ?: 0
-            val msg = if (wordlist != null) {
-                "Loaded wordlist: ${wordlist.name} ($total lines)"
-            } else {
-                "Cleared selected wordlist"
-            }
+            val msg = if (wordlist != null) "Loaded wordlist: ${wordlist.name} ($total lines)" else "Cleared selected wordlist"
             current.copy(
                 selectedWordlist = wordlist,
                 progressCurrent = 0,
@@ -142,7 +368,13 @@ class OpenBulletViewModel : ViewModel() {
     fun toggleStartStop() {
         val current = _uiState.value
         if (current.isRunning) {
-            stopRunner("Runner aborted by user.")
+            repository.cancelRunnerJob()
+            _uiState.update {
+                it.copy(
+                    isRunning = false,
+                    consoleLogs = appendLog(it, "Cancelling Runner WorkManager job...")
+                )
+            }
             return
         }
 
@@ -172,23 +404,23 @@ class OpenBulletViewModel : ViewModel() {
             return
         }
 
-        startLocalEvaluation(cfg, list)
-    }
+        lastObservedWorkLog = null
+        lastWorkerPacket = null
+        lastResultPacket = null
 
-    private fun startLocalEvaluation(cfg: ConfigItem, list: WordlistItem) {
-        runnerJob?.cancel()
-        val startIdx = (_uiState.value.startLine - 1).coerceIn(0, list.lines.lastIndex)
-        val totalToProcess = list.lines.size
-        _uiState.update { current ->
-            current.copy(
+        val parsed = LoliScriptParser.parse(cfg.scriptPreview)
+        val requiresNetwork = parsed.targetUrl.isNotBlank()
+
+        _uiState.update {
+            it.copy(
                 isRunning = true,
                 elapsedSeconds = 0L,
-                progressCurrent = startIdx,
-                progressTotal = totalToProcess,
+                progressCurrent = (current.startLine - 1).coerceIn(0, list.lineCount),
+                progressTotal = list.lineCount,
                 workerRows = emptyList(),
                 resultRows = emptyList(),
-                stats = current.stats.copy(
-                    dataTotal = totalToProcess,
+                stats = it.stats.copy(
+                    dataTotal = list.lineCount,
                     dataHits = 0,
                     dataCustom = 0,
                     dataBad = 0,
@@ -197,150 +429,42 @@ class OpenBulletViewModel : ViewModel() {
                     cpm = 0
                 ),
                 consoleLogs = appendLog(
-                    current,
-                    "Started '${cfg.name}' on '${list.name}' with ${_uiState.value.botsCount} bot(s)."
+                    it,
+                    if (requiresNetwork) {
+                        "Enqueued WorkManager + OkHttp job for '${cfg.name}'..."
+                    } else {
+                        "Enqueued WorkManager local scan job for '${cfg.name}'..."
+                    }
                 )
             )
         }
 
-        runnerJob = viewModelScope.launch {
-            var index = startIdx
-            var seconds = 0L
-            val patternRegex = runCatching {
-                Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}:.+$")
-            }.getOrNull()
-
-            while (index < list.lines.size) {
-                val batchSize = _uiState.value.botsCount.coerceIn(1, 10)
-                val batchEnd = (index + batchSize).coerceAtMost(list.lines.size)
-                val activeWorkers = mutableListOf<WorkerRow>()
-                val newResults = mutableListOf<ResultRow>()
-                val newHitsDb = mutableListOf<HitDbItem>()
-
-                var batchHits = 0
-                var batchCustom = 0
-                var batchBad = 0
-                var batchToCheck = 0
-
-                val proxies = _uiState.value.proxies
-                val useProxy = _uiState.value.proxyMode == ProxyMode.ON ||
-                    (_uiState.value.proxyMode == ProxyMode.DEF && cfg.needsProxies)
-
-                for (i in index until batchEnd) {
-                    val line = list.lines[i].trim()
-                    val proxyText = if (useProxy && proxies.isNotEmpty()) {
-                        val p = proxies[i % proxies.size]
-                        "${p.host}:${p.port}"
-                    } else {
-                        "Direct"
-                    }
-
-                    val matchesFormat = patternRegex?.matches(line) == true
-                    val hasColon = line.contains(":") && line.substringAfter(":").length >= 4
-
-                    val (statusLabel, statusColor, category) = when {
-                        line.isEmpty() -> Triple("EMPTY", ObColors.StatusBadRed, null)
-                        matchesFormat -> Triple("VALID", ObColors.StatusHitGreen, ResultTab.HITS)
-                        hasColon -> Triple("PARTIAL", ObColors.StatusCustomOrange, ResultTab.CUSTOM)
-                        else -> Triple("CHECK", ObColors.StatusToCheckAqua, ResultTab.TO_CHECK)
-                    }
-
-                    activeWorkers.add(
-                        WorkerRow(
-                            id = (i - index) + 1,
-                            data = line.ifEmpty { "<empty>" },
-                            proxy = proxyText,
-                            status = statusLabel,
-                            statusColor = statusColor
-                        )
-                    )
-
-                    val nowTime = currentClockString()
-                    when (category) {
-                        ResultTab.HITS -> {
-                            batchHits++
-                            newResults.add(ResultRow(nowTime, line, proxyText, "Format=Email:Token", ResultTab.HITS))
-                            newHitsDb.add(
-                                HitDbItem(
-                                    id = UUID.randomUUID().toString(),
-                                    date = nowTime,
-                                    data = line,
-                                    type = ResultTab.HITS,
-                                    configName = cfg.name,
-                                    wordlistName = list.name,
-                                    capturedData = "Format=Email:Token"
-                                )
-                            )
-                        }
-                        ResultTab.CUSTOM -> {
-                            batchCustom++
-                            newResults.add(ResultRow(nowTime, line, proxyText, "Format=Key:Value", ResultTab.CUSTOM))
-                        }
-                        ResultTab.TO_CHECK -> {
-                            batchToCheck++
-                            newResults.add(ResultRow(nowTime, line, proxyText, "Unparsed line", ResultTab.TO_CHECK))
-                        }
-                        null -> batchBad++
-                    }
-                }
-
-                index = batchEnd
-                seconds++
-                val cpmCalc = if (seconds > 0) ((index - startIdx) * 60 / seconds).toInt() else 0
-
-                _uiState.update { state ->
-                    val updatedStats = state.stats.copy(
-                        dataHits = state.stats.dataHits + batchHits,
-                        dataCustom = state.stats.dataCustom + batchCustom,
-                        dataBad = state.stats.dataBad + batchBad,
-                        dataToCheck = state.stats.dataToCheck + batchToCheck,
-                        cpm = cpmCalc
-                    )
-                    state.copy(
-                        elapsedSeconds = seconds,
-                        progressCurrent = index,
-                        workerRows = activeWorkers,
-                        resultRows = state.resultRows + newResults,
-                        hitsDb = state.hitsDb + newHitsDb,
-                        stats = updatedStats
-                    )
-                }
-
-                delay(280L)
-            }
-
-            stopRunner("Runner finished processing ${list.lines.size} item(s).")
-        }
-    }
-
-    private fun stopRunner(reason: String) {
-        runnerJob?.cancel()
-        runnerJob = null
-        _uiState.update { current ->
-            current.copy(
-                isRunning = false,
-                consoleLogs = appendLog(current, reason)
-            )
-        }
+        repository.enqueueRunnerJob(
+            configId = cfg.id,
+            wordlistId = list.id,
+            startLine = current.startLine,
+            botsCount = current.botsCount,
+            proxyMode = current.proxyMode,
+            requiresNetwork = requiresNetwork
+        )
     }
 
     fun toggleTimestampLogging() {
+        val next = !_uiState.value.settings.showTimestampsInConsole
         _uiState.update { current ->
-            val next = !current.settings.showTimestampsInConsole
             val msg = if (next) "Console timestamps enabled." else "Console timestamps disabled."
-            val updated = current.copy(
-                settings = current.settings.copy(showTimestampsInConsole = next)
-            )
+            val updated = current.copy(settings = current.settings.copy(showTimestampsInConsole = next))
             updated.copy(
                 consoleLogs = appendLog(updated, msg),
                 statusBannerMessage = msg
             )
         }
+        viewModelScope.launch { repository.saveSettings { it.copy(showTimestampsInConsole = next) } }
     }
 
     fun captureSnapshotSummary() {
         val state = _uiState.value
-        val summary = "Snapshot -> Bots: ${state.botsCount}, Prog: ${state.progressCurrent}/${state.progressTotal}, Hits: ${state.stats.dataHits}"
+        val summary = "Snapshot -> Bots: ${state.botsCount}, Prog: ${state.progressCurrent}/${state.progressTotal}, Hits: ${state.stats.dataHits}, Engine: ${state.nativeEngineBanner}"
         _uiState.update {
             it.copy(
                 consoleLogs = appendLog(it, summary),
@@ -359,7 +483,7 @@ class OpenBulletViewModel : ViewModel() {
         }
     }
 
-    // --- Configs CRUD ---
+    // --- Configs CRUD (Room) ---
     fun addConfig(
         name: String,
         author: String,
@@ -378,15 +502,17 @@ class OpenBulletViewModel : ViewModel() {
             needsProxies = needsProxies,
             lastModified = currentDateString(),
             scriptPreview = scriptPreview.ifBlank {
-                "# LoliScript Block Blueprint\nREQUEST GET \"https://example.com\"\nKEYCHECK\n  KEYCHAIN Success OR\n    KEY \"ok\""
+                "# LoliScript HTTP Check\nREQUEST GET \"https://httpbin.org/get?user=<USER>\"\nHEADER \"Accept: application/json\"\nKEYCHECK\n  KEYCHAIN Success OR\n    KEY \"HTTP/200\"\nPARSE \"<SOURCE>\" LR \"\\\"origin\\\": \\\"\" \"\\\"\" -> CAP \"Origin\""
             }
         )
+        viewModelScope.launch {
+            repository.saveConfig(config)
+        }
         _uiState.update { current ->
             current.copy(
-                configs = current.configs + config,
                 selectedConfigPreviewId = config.id,
                 activeDialog = ActiveDialog.None,
-                consoleLogs = appendLog(current, "Added config '$cleanName'.")
+                consoleLogs = appendLog(current, "Saved config '$cleanName' to Room DB.")
             )
         }
     }
@@ -396,18 +522,10 @@ class OpenBulletViewModel : ViewModel() {
     }
 
     fun deleteConfig(id: String) {
-        _uiState.update { current ->
-            val remaining = current.configs.filterNot { it.id == id }
-            val clearedSelected = if (current.selectedConfig?.id == id) null else current.selectedConfig
-            current.copy(
-                configs = remaining,
-                selectedConfig = clearedSelected,
-                selectedConfigPreviewId = if (current.selectedConfigPreviewId == id) remaining.firstOrNull()?.id else current.selectedConfigPreviewId
-            )
-        }
+        viewModelScope.launch { repository.deleteConfig(id) }
     }
 
-    // --- Wordlists CRUD ---
+    // --- Wordlists CRUD (Room + Retrofit Remote Import) ---
     fun addWordlist(name: String, type: String, purpose: String, rawText: String) {
         val cleanLines = rawText
             .lineSequence()
@@ -418,36 +536,29 @@ class OpenBulletViewModel : ViewModel() {
         val item = WordlistItem(
             id = UUID.randomUUID().toString(),
             name = cleanName,
-            path = "local://$cleanName",
+            path = "room://$cleanName",
             type = type.trim().ifEmpty { "Default" },
             lines = cleanLines,
             purpose = purpose.trim().ifEmpty { "Runner Input" }
         )
+        viewModelScope.launch { repository.saveWordlist(item) }
         _uiState.update { current ->
             current.copy(
-                wordlists = current.wordlists + item,
                 activeDialog = ActiveDialog.None,
-                consoleLogs = appendLog(current, "Imported wordlist '$cleanName' (${cleanLines.size} lines).")
+                consoleLogs = appendLog(current, "Saved wordlist '$cleanName' (${cleanLines.size} lines) to Room DB.")
             )
         }
     }
 
     fun deleteWordlist(id: String) {
-        _uiState.update { current ->
-            val remaining = current.wordlists.filterNot { it.id == id }
-            val selected = if (current.selectedWordlist?.id == id) null else current.selectedWordlist
-            current.copy(
-                wordlists = remaining,
-                selectedWordlist = selected
-            )
-        }
+        viewModelScope.launch { repository.deleteWordlist(id) }
     }
 
     fun clearWordlists() {
-        _uiState.update { it.copy(wordlists = emptyList(), selectedWordlist = null) }
+        viewModelScope.launch { repository.clearWordlists() }
     }
 
-    // --- Proxies CRUD ---
+    // --- Proxies CRUD (Room + WorkManager Proxy Checker + Retrofit URL Import) ---
     fun addProxies(rawText: String, protocol: ProxyProtocol) {
         val parsed = rawText
             .lineSequence()
@@ -464,20 +575,57 @@ class OpenBulletViewModel : ViewModel() {
                         port = port,
                         protocol = protocol,
                         pingMs = null,
-                        country = "Local",
+                        country = "Pending",
                         status = ProxyStatus.UNTESTED
                     )
                 } else null
             }
             .toList()
 
+        viewModelScope.launch { repository.saveProxies(parsed) }
         _uiState.update { current ->
-            val all = current.proxies + parsed
             current.copy(
-                proxies = all,
                 activeDialog = ActiveDialog.None,
-                stats = current.stats.copy(proxiesTotal = all.size),
-                consoleLogs = appendLog(current, "Imported ${parsed.size} ${protocol.label} proxy entries.")
+                consoleLogs = appendLog(current, "Saved ${parsed.size} ${protocol.label} proxy entries to Room DB.")
+            )
+        }
+    }
+
+    fun importProxiesFromUrl(url: String, protocol: ProxyProtocol) {
+        if (url.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(statusBannerMessage = "Fetching proxies via Retrofit...") }
+            repository.fetchRemoteText(url.trim())
+                .onSuccess { text ->
+                    addProxies(text, protocol)
+                    _uiState.update { it.copy(statusBannerMessage = "Imported proxies from URL") }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            statusBannerMessage = "Import failed: ${err.message ?: "Network error"}",
+                            consoleLogs = appendLog(it, "Proxy URL fetch error: ${err.message}")
+                        )
+                    }
+                }
+        }
+    }
+
+    fun toggleProxyCheckWork() {
+        if (_uiState.value.isCheckingProxies) {
+            repository.cancelProxyCheck()
+            _uiState.update { it.copy(isCheckingProxies = false, proxyCheckStatusText = "") }
+            return
+        }
+        if (_uiState.value.proxies.isEmpty()) {
+            _uiState.update { it.copy(statusBannerMessage = "Import proxies before checking") }
+            return
+        }
+        repository.enqueueProxyCheck()
+        _uiState.update {
+            it.copy(
+                isCheckingProxies = true,
+                consoleLogs = appendLog(it, "Started WorkManager OkHttp proxy check.")
             )
         }
     }
@@ -487,30 +635,14 @@ class OpenBulletViewModel : ViewModel() {
     }
 
     fun deleteProxy(id: String) {
-        _uiState.update { current ->
-            val remaining = current.proxies.filterNot { it.id == id }
-            current.copy(
-                proxies = remaining,
-                stats = recalculateProxyStats(remaining, current.stats)
-            )
-        }
+        viewModelScope.launch { repository.deleteProxy(id) }
     }
 
     fun clearProxies() {
-        _uiState.update { current ->
-            current.copy(
-                proxies = emptyList(),
-                stats = current.stats.copy(
-                    proxiesTotal = 0,
-                    proxiesAlive = 0,
-                    proxiesBanned = 0,
-                    proxiesBad = 0
-                )
-            )
-        }
+        viewModelScope.launch { repository.clearProxies() }
     }
 
-    // --- Hits DB ---
+    // --- Hits DB (Room) ---
     fun updateHitsSearchQuery(query: String) {
         _uiState.update { it.copy(hitsSearchQuery = query) }
     }
@@ -520,16 +652,14 @@ class OpenBulletViewModel : ViewModel() {
     }
 
     fun deleteHitItem(id: String) {
-        _uiState.update { current ->
-            current.copy(hitsDb = current.hitsDb.filterNot { it.id == id })
-        }
+        viewModelScope.launch { repository.deleteHit(id) }
     }
 
     fun clearHitsDb() {
-        _uiState.update { it.copy(hitsDb = emptyList()) }
+        viewModelScope.launch { repository.clearHitsDb() }
     }
 
-    // --- Tools (Real Local Utilities) ---
+    // --- Tools (List Cleaner, Formatter, Regex, Hash, Native Scanner & OkHttp/Retrofit Probe) ---
     fun selectToolsSection(section: ToolsSection) {
         _uiState.update { it.copy(tools = it.tools.copy(activeSection = section)) }
     }
@@ -627,37 +757,140 @@ class OpenBulletViewModel : ViewModel() {
         }
     }
 
-    // --- Settings ---
+    fun updateProbeUrl(url: String) {
+        _uiState.update { it.copy(tools = it.tools.copy(probeUrl = url)) }
+    }
+
+    fun runNetworkProbe() {
+        val url = _uiState.value.tools.probeUrl.trim()
+        if (url.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(tools = it.tools.copy(isProbing = true, probeResult = "Probing $url...")) }
+            repository.runHttpProbe(url)
+                .onSuccess { res ->
+                    _uiState.update { it.copy(tools = it.tools.copy(isProbing = false, probeResult = res)) }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(tools = it.tools.copy(isProbing = false, probeResult = "Error: ${err.message ?: err.javaClass.simpleName}"))
+                    }
+                }
+        }
+    }
+
+    fun updateNativeDiagnosticFields(
+        sampleBody: String? = null,
+        successKey: String? = null,
+        failureKey: String? = null
+    ) {
+        val cur = _uiState.value.tools
+        _uiState.update {
+            it.copy(
+                tools = cur.copy(
+                    nativeSampleBody = sampleBody ?: cur.nativeSampleBody,
+                    nativeSuccessKey = successKey ?: cur.nativeSuccessKey,
+                    nativeFailureKey = failureKey ?: cur.nativeFailureKey
+                )
+            )
+        }
+    }
+
+    fun runNativeScannerTest() {
+        val t = _uiState.value.tools
+        val startNs = System.nanoTime()
+        val (outcome, matched) = NativeScannerBridge.scanResponseKeys(
+            body = t.nativeSampleBody,
+            successKeys = listOf(t.nativeSuccessKey).filter { it.isNotBlank() },
+            customKeys = emptyList(),
+            failureKeys = listOf(t.nativeFailureKey).filter { it.isNotBlank() }
+        )
+        val analysis = NativeScannerBridge.analyzeComboLine(t.nativeSampleBody.lineSequence().firstOrNull().orEmpty())
+        val elapsedUs = (System.nanoTime() - startNs) / 1000L
+        val summary = "Outcome=${outcome.label} | Key=${matched ?: "None"} | FNV1a=${analysis.fnv1aHashHex.take(8)} | ${elapsedUs}us"
+        _uiState.update {
+            it.copy(tools = it.tools.copy(nativeScanSummary = summary))
+        }
+    }
+
+    // --- Settings (Room) ---
     fun selectSettingsSection(section: SettingsSection) {
         _uiState.update { it.copy(settings = it.settings.copy(activeSection = section)) }
     }
 
     fun updateTimeout(sec: Int) {
-        _uiState.update { it.copy(settings = it.settings.copy(requestTimeoutSec = sec.coerceIn(1, 120))) }
+        val clamped = sec.coerceIn(1, 120)
+        _uiState.update { it.copy(settings = it.settings.copy(requestTimeoutSec = clamped)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(requestTimeoutSec = clamped) } }
     }
 
     fun updateMaxRetries(retries: Int) {
-        _uiState.update { it.copy(settings = it.settings.copy(maxRetries = retries.coerceIn(0, 20))) }
+        val clamped = retries.coerceIn(0, 20)
+        _uiState.update { it.copy(settings = it.settings.copy(maxRetries = clamped)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(maxRetries = clamped) } }
     }
 
     fun toggleSettingAutoSave(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(autoSaveHits = v)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(autoSaveHits = v) } }
     }
 
     fun toggleSettingIgnoreEmpty(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(ignoreEmptyLines = v)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(ignoreEmptyLines = v) } }
     }
 
     fun toggleSettingSoundOnHit(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(soundOnHit = v)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(soundOnHit = v) } }
     }
 
     fun toggleSettingSoundOnFinish(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(soundOnFinish = v)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(soundOnFinish = v) } }
     }
 
     fun selectAccentColor(hex: Long) {
         _uiState.update { it.copy(settings = it.settings.copy(accentHex = hex)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(accentHex = hex) } }
+    }
+
+    private fun unpackWorkers(packed: String): List<WorkerRow> {
+        if (packed.isBlank()) return emptyList()
+        return packed.split("\u001E").mapNotNull { entry ->
+            val parts = entry.split("\u001F")
+            if (parts.size < 5) return@mapNotNull null
+            val id = parts[0].toIntOrNull() ?: return@mapNotNull null
+            val color = when (parts[4]) {
+                "HIT" -> ObColors.StatusHitGreen
+                "CUSTOM" -> ObColors.StatusCustomOrange
+                "BAD" -> ObColors.StatusBadRed
+                "RETRY" -> ObColors.StatusRetryYellow
+                else -> ObColors.StatusToCheckAqua
+            }
+            WorkerRow(
+                id = id,
+                data = parts[1],
+                proxy = parts[2],
+                status = parts[3],
+                statusColor = color
+            )
+        }
+    }
+
+    private fun unpackResults(packed: String): List<ResultRow> {
+        if (packed.isBlank()) return emptyList()
+        return packed.split("\u001E").mapNotNull { entry ->
+            val parts = entry.split("\u001F")
+            if (parts.size < 5) return@mapNotNull null
+            val cat = runCatching { ResultTab.valueOf(parts[4]) }.getOrDefault(ResultTab.TO_CHECK)
+            ResultRow(
+                time = parts[0],
+                data = parts[1],
+                proxy = parts[2],
+                capturedData = parts[3],
+                category = cat
+            )
+        }
     }
 
     private fun recalculateProxyStats(
@@ -684,9 +917,4 @@ class OpenBulletViewModel : ViewModel() {
 
     private fun currentDateString(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-
-    override fun onCleared() {
-        super.onCleared()
-        runnerJob?.cancel()
-    }
 }

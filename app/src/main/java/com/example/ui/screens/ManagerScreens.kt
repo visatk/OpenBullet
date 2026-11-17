@@ -60,8 +60,11 @@ import com.example.ui.theme.ObColors
 fun ProxiesScreen(
     proxies: List<ProxyItem>,
     activeFilter: ProxyProtocol?,
+    isCheckingProxies: Boolean,
+    proxyCheckStatusText: String,
     onFilterChange: (ProxyProtocol?) -> Unit,
     onAddClick: () -> Unit,
+    onToggleCheckProxies: () -> Unit,
     onDeleteProxy: (String) -> Unit,
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier
@@ -101,6 +104,25 @@ fun ProxiesScreen(
                     }
                 }
                 Spacer(Modifier.weight(1f))
+                ObBorderedButton(
+                    onClick = onToggleCheckProxies,
+                    isActive = isCheckingProxies,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.testTag("proxies_check_button")
+                ) {
+                    Icon(
+                        Icons.Outlined.PlayArrow,
+                        contentDescription = null,
+                        tint = if (isCheckingProxies) ObColors.StatusBadRed else ObColors.StatusHitGreen,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (isCheckingProxies) proxyCheckStatusText.ifEmpty { "Stop" } else "Check",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ObColors.TextPrimary
+                    )
+                }
                 if (proxies.isNotEmpty()) {
                     IconButton(
                         onClick = onClearAll,
@@ -148,10 +170,17 @@ fun ProxiesScreen(
                                             .padding(horizontal = 12.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(proxy.host, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.36f))
-                                        Text(proxy.port.toString(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextSecondary, modifier = Modifier.weight(0.16f))
-                                        Text(proxy.protocol.label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(0.18f))
-                                        Text(proxy.status.label, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = proxy.status.color, modifier = Modifier.weight(0.20f))
+                                        Text(proxy.host, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.34f))
+                                        Text(proxy.port.toString(), style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextSecondary, modifier = Modifier.weight(0.14f))
+                                        Text(proxy.protocol.label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(0.16f))
+                                        Text(
+                                            text = if (proxy.pingMs != null) "${proxy.status.label} (${proxy.pingMs}ms)" else proxy.status.label,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = proxy.status.color,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(0.26f)
+                                        )
                                         IconButton(onClick = { onDeleteProxy(proxy.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
                                             Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete proxy", tint = ObColors.TextMuted, modifier = Modifier.size(18.dp))
                                         }

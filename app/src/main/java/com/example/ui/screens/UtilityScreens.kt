@@ -24,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwapHoriz
@@ -86,6 +88,7 @@ fun ToolsScreen(
                     ToolsSection.CLEANER -> Icons.Outlined.CleaningServices
                     ToolsSection.FORMATTER -> Icons.Outlined.SwapHoriz
                     ToolsSection.REGEX_HASH -> Icons.Outlined.Code
+                    ToolsSection.DIAGNOSTICS -> Icons.Outlined.Memory
                 }
                 ObBorderedButton(
                     onClick = { viewModel.selectToolsSection(sec) },
@@ -248,6 +251,85 @@ fun ToolsScreen(
                     }
                 }
             }
+
+            ToolsSection.DIAGNOSTICS -> {
+                ObPanel(backgroundColor = ObColors.SurfacePanel, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Native Key Scanner (NDK C++17 / JNI)", style = MaterialTheme.typography.titleSmall, color = ObColors.TextPrimary)
+                        Text(
+                            text = "Engine: ${com.example.nativeengine.NativeScannerBridge.engineBanner()}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        OutlinedTextField(
+                            value = tools.nativeSampleBody,
+                            onValueChange = { viewModel.updateNativeDiagnosticFields(sampleBody = it) },
+                            label = { Text("Sample HTTP Response / Line") },
+                            minLines = 3,
+                            colors = obFieldColors(),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = tools.nativeSuccessKey,
+                                onValueChange = { viewModel.updateNativeDiagnosticFields(successKey = it) },
+                                label = { Text("Success Key") },
+                                singleLine = true,
+                                colors = obFieldColors(),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = tools.nativeFailureKey,
+                                onValueChange = { viewModel.updateNativeDiagnosticFields(failureKey = it) },
+                                label = { Text("Failure Key") },
+                                singleLine = true,
+                                colors = obFieldColors(),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        ObBorderedButton(onClick = viewModel::runNativeScannerTest, modifier = Modifier.testTag("tools_native_scan_btn")) {
+                            Icon(Icons.Outlined.Memory, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Run Key Scan", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                        }
+                        if (tools.nativeScanSummary.isNotEmpty()) {
+                            Text(
+                                text = tools.nativeScanSummary,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = ObColors.StatusHitGreen
+                            )
+                        }
+
+                        HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+
+                        Text("Network Probe (OkHttp + Retrofit)", style = MaterialTheme.typography.titleSmall, color = ObColors.TextPrimary)
+                        OutlinedTextField(
+                            value = tools.probeUrl,
+                            onValueChange = viewModel::updateProbeUrl,
+                            label = { Text("Probe Endpoint URL") },
+                            singleLine = true,
+                            colors = obFieldColors(),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        ObBorderedButton(onClick = viewModel::runNetworkProbe, modifier = Modifier.testTag("tools_network_probe_btn")) {
+                            Icon(Icons.Outlined.NetworkCheck, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (tools.isProbing) "Probing..." else "Probe Endpoint", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                        }
+                        if (tools.probeResult.isNotEmpty()) {
+                            Text(
+                                text = tools.probeResult,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = if (tools.probeResult.startsWith("Error")) ObColors.StatusBadRed else ObColors.StatusHitGreen
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -392,6 +474,7 @@ fun SettingsScreen(
 
 @Composable
 fun AboutScreen(
+    nativeEngineBanner: String = "",
     modifier: Modifier = Modifier
 ) {
     val scroll = rememberScrollState()
@@ -412,7 +495,7 @@ fun AboutScreen(
             Column(
                 modifier = Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OpenBulletLogo(modifier = Modifier.size(56.dp), centerBulletColor = MaterialTheme.colorScheme.primary)
                 Text(
@@ -421,18 +504,30 @@ fun AboutScreen(
                     color = ObColors.TextPrimary
                 )
                 Text(
-                    text = "Adaptive Android Workstation Interface",
+                    text = "Adaptive Android Workstation",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
                 HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
-                Text(
-                    text = "Designed with adaptive Material 3 navigation (thumb-zone NavigationBar on compact phones, NavigationRail on tablets/landscape), edge-to-edge system bar rendering, tonal surface elevation, and full workstation parity across Runner, Proxies, Wordlists, Configs, Hits DB, Tools, and Settings.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ObColors.TextSecondary
-                )
+                ArchitectureRow("UI", "Jetpack Compose / Material 3 / Kotlin")
+                ArchitectureRow("DB", "Room (SQLite) + KSP Reactive Flows")
+                ArchitectureRow("Background", "WorkManager + Bounded Coroutines")
+                ArchitectureRow("Networking", "OkHttp + Retrofit + Moshi")
+                ArchitectureRow("Scanning", nativeEngineBanner.ifEmpty { "NDK C++17 / JNI Bridge" })
             }
         }
+    }
+}
+
+@Composable
+private fun ArchitectureRow(layer: String, tech: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(layer, style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+        Text(tech, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextPrimary)
     }
 }
 

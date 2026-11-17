@@ -185,8 +185,11 @@ fun OpenBulletApp(
                                     MainTab.PROXIES -> ProxiesScreen(
                                         proxies = state.proxies,
                                         activeFilter = state.proxyFilter,
+                                        isCheckingProxies = state.isCheckingProxies,
+                                        proxyCheckStatusText = state.proxyCheckStatusText,
                                         onFilterChange = viewModel::setProxyFilter,
                                         onAddClick = { viewModel.openDialog(ActiveDialog.AddProxies) },
+                                        onToggleCheckProxies = viewModel::toggleProxyCheckWork,
                                         onDeleteProxy = viewModel::deleteProxy,
                                         onClearAll = viewModel::clearProxies,
                                         modifier = Modifier.fillMaxSize()
@@ -242,7 +245,10 @@ fun OpenBulletApp(
                                         modifier = Modifier.fillMaxSize()
                                     )
 
-                                    MainTab.ABOUT -> AboutScreen(modifier = Modifier.fillMaxSize())
+                                    MainTab.ABOUT -> AboutScreen(
+                                        nativeEngineBanner = state.nativeEngineBanner,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
                                 }
                             }
                         }
@@ -265,7 +271,8 @@ fun OpenBulletApp(
                 onOpenAddWordlistDialog = { viewModel.openDialog(ActiveDialog.AddWordlist) },
                 onCreateConfig = viewModel::addConfig,
                 onCreateWordlist = viewModel::addWordlist,
-                onImportProxies = viewModel::addProxies
+                onImportProxies = viewModel::addProxies,
+                onImportProxiesFromUrl = viewModel::importProxiesFromUrl
             )
         }
     }

@@ -49,7 +49,8 @@ enum class SettingsSection(val label: String) {
 enum class ToolsSection(val label: String) {
     CLEANER("List Cleaner"),
     FORMATTER("Combo Formatter"),
-    REGEX_HASH("Regex & Hash")
+    REGEX_HASH("Regex & Hash"),
+    DIAGNOSTICS("Native & Net")
 }
 
 data class WorkerRow(
@@ -152,7 +153,14 @@ data class ToolsState(
     val regexMatches: List<String> = emptyList(),
     val hashInput: String = "",
     val base64Output: String = "",
-    val sha256Output: String = ""
+    val sha256Output: String = "",
+    val probeUrl: String = "https://httpbin.org/get",
+    val probeResult: String = "",
+    val isProbing: Boolean = false,
+    val nativeSampleBody: String = "",
+    val nativeSuccessKey: String = "HTTP/200",
+    val nativeFailureKey: String = "Unauthorized",
+    val nativeScanSummary: String = ""
 )
 
 sealed interface ActiveDialog {
@@ -175,6 +183,8 @@ data class OpenBulletUiState(
     val progressTotal: Int = 0,
     val proxyMode: ProxyMode = ProxyMode.DEF,
     val isRunning: Boolean = false,
+    val isCheckingProxies: Boolean = false,
+    val proxyCheckStatusText: String = "",
     val elapsedSeconds: Long = 0L,
     val selectedResultTab: ResultTab = ResultTab.HITS,
     val selectedConfig: ConfigItem? = null,
@@ -193,6 +203,7 @@ data class OpenBulletUiState(
     val selectedConfigPreviewId: String? = null,
     val settings: SettingsState = SettingsState(),
     val tools: ToolsState = ToolsState(),
+    val nativeEngineBanner: String = "",
     val activeDialog: ActiveDialog = ActiveDialog.None,
     val statusBannerMessage: String? = null
 )
