@@ -1,0 +1,57 @@
+<resources>
+    <string name="app_name">OpenBullet</string>
+    <string name="app_title_version">OpenBullet 1.0.0</string>
+    <string name="tab_runner">Runner</string>
+    <string name="tab_proxies">Proxies</string>
+    <string name="tab_wordlists">Wordlists</string>
+    <string name="tab_configs">Configs</string>
+    <string name="tab_hits_db">Hits DB</string>
+    <string name="tab_tools">Tools</string>
+    <string name="tab_settings">Settings</string>
+    <string name="tab_about">About</string>
+
+    <string name="cd_app_logo">OpenBullet logo</string>
+    <string name="cd_history_timer">Toggle timestamp log mode</string>
+    <string name="cd_snapshot">Capture UI summary snapshot</string>
+    <string name="cd_back_arrow">Back</string>
+
+    <string name="label_start_colon">Start:</string>
+    <string name="label_bots_colon">Bots:</string>
+    <string name="label_prog_colon">Prog:</string>
+    <string name="label_prox_colon">Prox:</string>
+    <string name="prox_def">DEF</string>
+    <string name="prox_on">ON</string>
+    <string name="prox_off">OFF</string>
+    <string name="action_start">START</string>
+    <string name="action_stop">STOP</string>
+
+    <string name="col_id">Id</string>
+    <string name="col_data">Data</string>
+    <string name="col_proxy">Proxy</string>
+    <string name="col_status">Status</string>
+    <string name="col_time">Time</string>
+    <string name="col_captured_data">Captured Data</string>
+
+    <string name="result_tab_hits">Hits</string>
+    <string name="result_tab_custom">Custom</string>
+    <string name="result_tab_to_check">ToCheck</string>
+
+    <string name="btn_select_cfg">Select CFG</string>
+    <string name="btn_select_list">Select List</string>
+    <string name="value_none">None</string>
+    <string name="btn_back">Back</string>
+    <string name="log_initialized">Runner initialized succesfully!</string>
+
+    <string name="stats_data_header">DATA</string>
+    <string name="stats_proxies_header">PROXIES</string>
+    <string name="stats_total">Total:</string>
+    <string name="stats_hits">Hits:</string>
+    <string name="stats_custom">Custom:</string>
+    <string name="stats_bad">Bad:</string>
+    <string name="stats_retries">Retries:</string>
+    <string name="stats_to_check">To Check:</string>
+    <string name="stats_alive">Alive:</string>
+    <string name="stats_banned">Banned:</string>
+    <string name="stats_cpm">CPM:</string>
+    <string name="stats_credit">Credit:</string>
+</resources>

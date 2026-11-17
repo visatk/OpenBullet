@@ -1,0 +1,6 @@
+{
+  "name": "OpenBullet",
+  "description": "Visual UI workstation for OpenBullet 1.0.0 runner, proxies, wordlists, configs, hits database, tools, and settings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
