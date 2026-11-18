@@ -1,0 +1,174 @@
+name: Android Release Build & GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag version (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      release_title:
+        description: 'GitHub Release title'
+        required: false
+        default: 'OpenBullet 1.0.0 Android Release'
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release-build:
+    name: Build Signed Release APK/AAB & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: false
+
+      - name: Ensure .env exists from .env.example
+        run: |
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+
+      - name: Configure Release Keystore (from Secrets or Auto-Generated Fallback)
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD_SECRET: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD_SECRET: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Decoding release keystore from KEYSTORE_BASE64 secret..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            STORE_PASS="${STORE_PASSWORD_SECRET:-android}"
+            KEY_PASS="${KEY_PASSWORD_SECRET:-android}"
+            echo "signing_mode=custom-secret-keystore" >> "$GITHUB_OUTPUT"
+          else
+            echo "No KEYSTORE_BASE64 secret configured; generating self-signed release keystore (alias: upload)..."
+            STORE_PASS="${STORE_PASSWORD_SECRET:-openbullet_release_pass}"
+            KEY_PASS="${KEY_PASSWORD_SECRET:-openbullet_release_pass}"
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storetype PKCS12 \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$STORE_PASS" \
+              -keypass "$KEY_PASS" \
+              -dname "CN=OpenBullet Android, OU=Mobile, O=OpenBullet, L=San Francisco, S=CA, C=US"
+            echo "signing_mode=auto-generated-pkcs12" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Also ensure debug.keystore exists if debug tasks or unit tests run
+          if [ ! -f "${GITHUB_WORKSPACE}/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "${GITHUB_WORKSPACE}/debug.keystore" \
+              -storetype PKCS12 \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Build Signed Release APK & Android App Bundle (AAB)
+        run: gradle :app:assembleRelease :app:bundleRelease --no-daemon
+
+      - name: Determine Release Tag & Prepare Artifacts
+        id: prep
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAG="${{ inputs.release_tag }}"
+          else
+            RAW_TAG="${GITHUB_REF_NAME}"
+          fi
+          CLEAN_VER="${RAW_TAG#v}"
+          mkdir -p release-dist
+
+          APK_SRC=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          AAB_SRC=$(find app/build/outputs/bundle/release -name "*.aab" | head -n 1)
+
+          if [ -z "$APK_SRC" ]; then
+            echo "Error: Release APK was not found in app/build/outputs/apk/release"
+            exit 1
+          fi
+
+          APK_OUT="release-dist/OpenBullet-v${CLEAN_VER}-release.apk"
+          cp "$APK_SRC" "$APK_OUT"
+
+          if [ -n "$AAB_SRC" ]; then
+            AAB_OUT="release-dist/OpenBullet-v${CLEAN_VER}-release.aab"
+            cp "$AAB_SRC" "$AAB_OUT"
+          fi
+
+          (
+            cd release-dist
+            sha256sum * > SHA256SUMS.txt
+          )
+
+          echo "tag_name=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Build Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenBullet-${{ steps.prep.outputs.tag_name }}-Release-Bundles
+          path: release-dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag_name }}
+          name: ${{ inputs.release_title || format('OpenBullet {0}', steps.prep.outputs.tag_name) }}
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+          files: |
+            release-dist/*.apk
+            release-dist/*.aab
+            release-dist/SHA256SUMS.txt
+          body: |
+            ## OpenBullet ${{ steps.prep.outputs.tag_name }} Android Release
+
+            ### Included Artifacts
+            - **`OpenBullet-v${{ steps.prep.outputs.version }}-release.apk`**: Signed installable Android package (`applicationId: com.aistudio.openbullet.vbxmkr`).
+            - **`OpenBullet-v${{ steps.prep.outputs.version }}-release.aab`**: Signed Android App Bundle for Play Console distribution.
+            - **`SHA256SUMS.txt`**: SHA-256 checksums for verifying binary integrity.
+
+            ### Highlights
+            - **Foreground Service & Keep-Awake Engine**: Continuous multi-bot execution with `PARTIAL_WAKE_LOCK` and `WifiLock` when backgrounded or screen is off.
+            - **Config Maker / Editor & Live Debugger**: Visual Stacker blocks (`REQUEST`, `PARSE`, `KEYCHECK`, `FUNCTION`), raw LoliScript editor, and single-combo debugger.
+            - **`.loli` & JSON Config Import / Export**: Native `[SETTINGS]` + `[SCRIPT]` `.loli` and `.json` config serialization and import.

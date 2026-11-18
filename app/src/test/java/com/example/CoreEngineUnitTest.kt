@@ -106,4 +106,42 @@ class CoreEngineUnitTest {
         assertEquals("IP", reparsed.parseRules[1].captureName)
         assertFalse(reparsed.parseRules[1].isCapture)
     }
+
+    @Test
+    fun `configFileCodec roundtrips OpenBullet loli and JSON formats`() {
+        val sample = com.example.model.ConfigItem(
+            id = "cfg-1",
+            name = "GitHub API Check",
+            author = "DevTester",
+            category = "API",
+            wordlistType = "Mail:Pass",
+            needsProxies = true,
+            lastModified = "2026-11-18",
+            scriptPreview = """
+                REQUEST GET "https://httpbin.org/get?user=<USER>"
+                HEADER "Accept: application/json"
+                KEYCHECK
+                  KEYCHAIN Success OR
+                    KEY "HTTP/200"
+            """.trimIndent()
+        )
+
+        val loliText = com.example.network.ConfigFileCodec.serializeToLoli(sample)
+        assertTrue(loliText.contains("[SETTINGS]"))
+        assertTrue(loliText.contains("[SCRIPT]"))
+        assertEquals("OpenBullet .loli", com.example.network.ConfigFileCodec.detectFormatLabel(loliText))
+
+        val parsedFromLoli = com.example.network.ConfigFileCodec.parseImportPayload(loliText)
+        assertEquals(1, parsedFromLoli.size)
+        assertEquals("GitHub API Check", parsedFromLoli.first().name)
+        assertEquals("DevTester", parsedFromLoli.first().author)
+        assertEquals("API", parsedFromLoli.first().category)
+        assertEquals("Mail:Pass", parsedFromLoli.first().wordlistType)
+        assertTrue(parsedFromLoli.first().scriptPreview.contains("https://httpbin.org/get?user=<USER>"))
+
+        val jsonBundle = com.example.network.ConfigFileCodec.serializeListToJson(listOf(sample))
+        val parsedFromJson = com.example.network.ConfigFileCodec.parseImportPayload(jsonBundle)
+        assertEquals(1, parsedFromJson.size)
+        assertEquals("GitHub API Check", parsedFromJson.first().name)
+    }
 }

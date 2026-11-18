@@ -716,6 +716,94 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.deleteConfig(id) }
     }
 
+    fun importConfigPayload(
+        rawText: String,
+        fallbackName: String = "Imported Config",
+        openInEditorAfterImport: Boolean = false
+    ) {
+        val parsedList = com.example.network.ConfigFileCodec.parseImportPayload(rawText, fallbackName)
+        if (parsedList.isEmpty()) {
+            _uiState.update {
+                it.copy(statusBannerMessage = "Nothing to import: empty or invalid payload")
+            }
+            return
+        }
+        viewModelScope.launch {
+            parsedList.forEach { cfg -> repository.saveConfig(cfg) }
+        }
+        val firstCfg = parsedList.first()
+        _uiState.update { current ->
+            current.copy(
+                selectedConfigPreviewId = firstCfg.id,
+                activeDialog = ActiveDialog.None,
+                configEditor = if (openInEditorAfterImport) ConfigEditorHelper.createInitialState(firstCfg) else current.configEditor,
+                statusBannerMessage = "Imported ${parsedList.size} config(s) (${firstCfg.name})",
+                consoleLogs = appendLog(
+                    current,
+                    "Imported ${parsedList.size} config(s) via ConfigFileCodec (${com.example.network.ConfigFileCodec.detectFormatLabel(rawText)})."
+                )
+            )
+        }
+    }
+
+    fun importConfigFromUrl(url: String) {
+        if (url.isBlank()) return
+        val fallbackName = url.trim().substringAfterLast('/').ifBlank { "Remote Config" }
+        viewModelScope.launch {
+            _uiState.update { it.copy(statusBannerMessage = "Fetching config from URL...") }
+            repository.fetchRemoteText(url.trim())
+                .onSuccess { text ->
+                    importConfigPayload(text, fallbackName = fallbackName, openInEditorAfterImport = false)
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            statusBannerMessage = "Config fetch failed: ${err.message ?: "Network error"}",
+                            consoleLogs = appendLog(it, "Config URL fetch error: ${err.message}")
+                        )
+                    }
+                }
+        }
+    }
+
+    fun buildSingleConfigExport(
+        config: ConfigItem,
+        format: com.example.network.ConfigExportFormat
+    ): String {
+        return when (format) {
+            com.example.network.ConfigExportFormat.LOLI ->
+                com.example.network.ConfigFileCodec.serializeToLoli(config)
+            com.example.network.ConfigExportFormat.JSON ->
+                com.example.network.ConfigFileCodec.serializeToJson(config)
+        }
+    }
+
+    fun buildActiveEditorConfigExport(
+        format: com.example.network.ConfigExportFormat
+    ): Pair<String, String>? {
+        val ed = _uiState.value.configEditor ?: return null
+        val finalScript = ConfigEditorHelper.syncScriptForSave(ed)
+        val cleanName = ed.name.trim().ifEmpty { "Untitled_Config" }
+        val tempConfig = ConfigItem(
+            id = ed.configId,
+            name = cleanName,
+            author = ed.author.trim().ifEmpty { "LocalUser" },
+            category = ed.category.trim().ifEmpty { "Default" },
+            wordlistType = ed.wordlistType.trim().ifEmpty { "Default" },
+            needsProxies = ed.needsProxies,
+            lastModified = currentDateString(),
+            scriptPreview = finalScript
+        )
+        val safeFileName = cleanName.replace(Regex("""[^a-zA-Z0-9._-]"""), "_") + ".${format.extension}"
+        return safeFileName to buildSingleConfigExport(tempConfig, format)
+    }
+
+    fun buildAllConfigsJsonExport(): String {
+        val all = _uiState.value.configs
+        if (all.isEmpty()) return ""
+        return com.example.network.ConfigFileCodec.serializeListToJson(all)
+    }
+
     // --- Wordlists CRUD (Room + SAF + Tools export) ---
     fun addWordlist(name: String, type: String, purpose: String, rawText: String) {
         val cleanLines = rawText

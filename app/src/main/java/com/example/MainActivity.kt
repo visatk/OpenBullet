@@ -214,6 +214,16 @@ fun OpenBulletApp(
                                     onRawScriptChange = viewModel::updateEditorRawScript,
                                     onDebugInputChange = viewModel::updateEditorDebugInputs,
                                     onRunDebug = viewModel::runConfigDebug,
+                                    onExportLoli = {
+                                        val exported = viewModel.buildActiveEditorConfigExport(
+                                            com.example.network.ConfigExportFormat.LOLI
+                                        )
+                                        if (exported != null) {
+                                            val (fileName, content) = exported
+                                            copyAndShareTextContent(context, fileName, content)
+                                            viewModel.showBannerMessage("Copied & exporting $fileName")
+                                        }
+                                    },
                                     onSave = viewModel::saveEditedConfig,
                                     modifier = Modifier.fillMaxSize()
                                 )
@@ -295,6 +305,32 @@ fun OpenBulletApp(
                                             selectedPreviewId = state.selectedConfigPreviewId,
                                             activeRunnerConfigId = state.selectedConfig?.id,
                                             onNewConfigClick = { viewModel.openConfigEditor(null) },
+                                            onImportConfigClick = { viewModel.openDialog(ActiveDialog.ImportConfig) },
+                                            onExportConfigLoli = { cfg ->
+                                                val content = viewModel.buildSingleConfigExport(
+                                                    cfg,
+                                                    com.example.network.ConfigExportFormat.LOLI
+                                                )
+                                                val subject = "${cfg.name}.loli"
+                                                copyAndShareTextContent(context, subject, content)
+                                                viewModel.showBannerMessage("Exported & copied $subject")
+                                            },
+                                            onExportConfigJson = { cfg ->
+                                                val content = viewModel.buildSingleConfigExport(
+                                                    cfg,
+                                                    com.example.network.ConfigExportFormat.JSON
+                                                )
+                                                val subject = "${cfg.name}.json"
+                                                copyAndShareTextContent(context, subject, content)
+                                                viewModel.showBannerMessage("Exported & copied $subject")
+                                            },
+                                            onExportAllJson = {
+                                                val content = viewModel.buildAllConfigsJsonExport()
+                                                if (content.isNotBlank()) {
+                                                    copyAndShareTextContent(context, "openbullet_configs_backup.json", content)
+                                                    viewModel.showBannerMessage("Exported all ${state.configs.size} configs (.json)")
+                                                }
+                                            },
                                             onEditConfig = { viewModel.openConfigEditor(it) },
                                             onSelectPreview = viewModel::selectConfigForPreview,
                                             onUseInRunner = {
@@ -363,12 +399,20 @@ fun OpenBulletApp(
                 onOpenNewConfigDialog = { viewModel.openConfigEditor(null) },
                 onOpenAddWordlistDialog = { viewModel.openDialog(ActiveDialog.AddWordlist) },
                 onCreateConfig = viewModel::addConfig,
+                onImportConfigPayload = viewModel::importConfigPayload,
+                onImportConfigFromUrl = viewModel::importConfigFromUrl,
                 onCreateWordlist = viewModel::addWordlist,
                 onImportProxies = viewModel::addProxies,
                 onImportProxiesFromUrl = viewModel::importProxiesFromUrl
             )
         }
     }
+}
+
+private fun copyAndShareTextContent(context: Context, subject: String, content: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+    cm?.setPrimaryClip(android.content.ClipData.newPlainText(subject, content))
+    shareTextContent(context, subject, content)
 }
 
 private fun shareTextContent(context: Context, subject: String, content: String) {

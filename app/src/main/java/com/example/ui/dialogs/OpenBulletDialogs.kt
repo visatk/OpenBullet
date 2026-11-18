@@ -47,6 +47,8 @@ import com.example.ui.components.ObBorderedButton
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.ObColors
 
+import com.example.network.ConfigFileCodec
+
 @Composable
 fun OpenBulletDialogHost(
     activeDialog: ActiveDialog,
@@ -62,6 +64,8 @@ fun OpenBulletDialogHost(
     onOpenNewConfigDialog: () -> Unit,
     onOpenAddWordlistDialog: () -> Unit,
     onCreateConfig: (name: String, author: String, category: String, wordlistType: String, needsProxies: Boolean, script: String) -> Unit,
+    onImportConfigPayload: (rawText: String, fallbackName: String, openInEditor: Boolean) -> Unit,
+    onImportConfigFromUrl: (url: String) -> Unit,
     onCreateWordlist: (name: String, type: String, purpose: String, rawText: String) -> Unit,
     onImportProxies: (rawText: String, protocol: ProxyProtocol) -> Unit,
     onImportProxiesFromUrl: (url: String, protocol: ProxyProtocol) -> Unit
@@ -212,6 +216,108 @@ fun OpenBulletDialogHost(
                     ObBorderedButton(onClick = onDismiss) { Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary) }
                     ObBorderedButton(onClick = { onCreateConfig(name, author, category, "Default", needsProxies, script) }) {
                         Text("Save", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+
+        ActiveDialog.ImportConfig -> {
+            val context = LocalContext.current
+            var fallbackName by remember { mutableStateOf("") }
+            var remoteUrl by remember { mutableStateOf("") }
+            var payloadText by remember { mutableStateOf("") }
+
+            val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+                if (uri != null) {
+                    val content = runCatching {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    }.getOrNull().orEmpty()
+                    if (content.isNotEmpty()) {
+                        payloadText = content
+                        if (fallbackName.isBlank()) {
+                            fallbackName = uri.lastPathSegment?.substringAfterLast('/') ?: "imported_config.loli"
+                        }
+                    }
+                }
+            }
+
+            val detectedFormat = remember(payloadText) { ConfigFileCodec.detectFormatLabel(payloadText) }
+
+            ObDialogFrame(title = "Import Config (.loli / JSON)", onDismiss = onDismiss) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ObBorderedButton(onClick = { filePicker.launch(arrayOf("*/*", "application/json", "text/plain")) }) {
+                        Text("Pick .loli / .json File", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(
+                        text = "Format: $detectedFormat",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        color = ObColors.StatusHitGreen
+                    )
+                }
+                OutlinedTextField(
+                    value = fallbackName,
+                    onValueChange = { fallbackName = it },
+                    label = { Text("Fallback Name (if not in file)") },
+                    singleLine = true,
+                    colors = dialogFieldColors(),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = remoteUrl,
+                        onValueChange = { remoteUrl = it },
+                        label = { Text("Remote .loli / .json URL (optional)") },
+                        singleLine = true,
+                        colors = dialogFieldColors(),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    ObBorderedButton(onClick = { onImportConfigFromUrl(remoteUrl) }) {
+                        Text("Fetch", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                OutlinedTextField(
+                    value = payloadText,
+                    onValueChange = { payloadText = it },
+                    label = { Text("Paste .loli ([SETTINGS]/[SCRIPT]), JSON, or LoliScript") },
+                    minLines = 5,
+                    maxLines = 8,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    colors = dialogFieldColors(),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+                    }
+                    ObBorderedButton(
+                        onClick = {
+                            onImportConfigPayload(
+                                payloadText,
+                                fallbackName.ifBlank { "Imported Config" },
+                                true
+                            )
+                        }
+                    ) {
+                        Text("Import & Edit", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                    ObBorderedButton(
+                        onClick = {
+                            onImportConfigPayload(
+                                payloadText,
+                                fallbackName.ifBlank { "Imported Config" },
+                                false
+                            )
+                        },
+                        isActive = true
+                    ) {
+                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }

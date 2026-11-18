@@ -263,6 +263,7 @@ sealed interface ActiveDialog {
     data object AddProxies : ActiveDialog
     data object AddWordlist : ActiveDialog
     data object AddConfig : ActiveDialog
+    data object ImportConfig : ActiveDialog
     data object EditStartLine : ActiveDialog
     data object EditBotsCount : ActiveDialog
 }

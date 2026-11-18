@@ -366,6 +366,10 @@ fun ConfigsScreen(
     selectedPreviewId: String?,
     activeRunnerConfigId: String?,
     onNewConfigClick: () -> Unit,
+    onImportConfigClick: () -> Unit,
+    onExportConfigLoli: (ConfigItem) -> Unit,
+    onExportConfigJson: (ConfigItem) -> Unit,
+    onExportAllJson: () -> Unit,
     onEditConfig: (ConfigItem) -> Unit,
     onSelectPreview: (String) -> Unit,
     onUseInRunner: (ConfigItem) -> Unit,
@@ -386,36 +390,73 @@ fun ConfigsScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "Configs: ${configs.size}",
                     style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFontFamily),
-                    color = ObColors.TextSecondary
+                    color = ObColors.TextSecondary,
+                    modifier = Modifier.padding(end = 4.dp)
                 )
+                ObBorderedButton(
+                    onClick = onImportConfigClick,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.testTag("configs_import_button")
+                ) {
+                    Icon(Icons.Outlined.Add, contentDescription = "Import .loli or JSON", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import (.loli/JSON)", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                }
                 if (previewConfig != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ObBorderedButton(
-                            onClick = { onEditConfig(previewConfig) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.testTag("configs_edit_button")
-                        ) {
-                            Icon(Icons.Outlined.Edit, contentDescription = "Edit Config", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text("Edit", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
-                        }
-                        ObBorderedButton(
-                            onClick = { onUseInRunner(previewConfig) },
-                            isActive = previewConfig.id == activeRunnerConfigId,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.testTag("configs_load_runner_button")
-                        ) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = "Load in Runner", tint = ObColors.StatusHitGreen, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Load in Runner", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
-                        }
+                    ObBorderedButton(
+                        onClick = { onEditConfig(previewConfig) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("configs_edit_button")
+                    ) {
+                        Icon(Icons.Outlined.Edit, contentDescription = "Edit Config", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Edit", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                    ObBorderedButton(
+                        onClick = { onExportConfigLoli(previewConfig) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("configs_export_loli_button")
+                    ) {
+                        Icon(Icons.Outlined.Share, contentDescription = "Export .loli", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(".loli", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                    ObBorderedButton(
+                        onClick = { onExportConfigJson(previewConfig) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("configs_export_json_button")
+                    ) {
+                        Icon(Icons.Outlined.Code, contentDescription = "Export JSON", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(".json", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                    ObBorderedButton(
+                        onClick = { onUseInRunner(previewConfig) },
+                        isActive = previewConfig.id == activeRunnerConfigId,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("configs_load_runner_button")
+                    ) {
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = "Load in Runner", tint = ObColors.StatusHitGreen, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Load in Runner", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                }
+                if (configs.size > 1) {
+                    ObBorderedButton(
+                        onClick = onExportAllJson,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("configs_export_all_button")
+                    ) {
+                        Text("Backup All", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
                     }
                 }
             }

@@ -55,6 +55,8 @@ import com.example.ui.components.ObPanel
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.ObColors
 
+import androidx.compose.material.icons.outlined.Share
+
 @Composable
 fun ConfigEditorScreen(
     editorState: ConfigEditorState,
@@ -70,6 +72,7 @@ fun ConfigEditorScreen(
     onRawScriptChange: (String) -> Unit,
     onDebugInputChange: (testData: String?, useProxy: Boolean?) -> Unit,
     onRunDebug: () -> Unit,
+    onExportLoli: () -> Unit,
     onSave: (loadInRunner: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -110,6 +113,15 @@ fun ConfigEditorScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            ObBorderedButton(
+                onClick = onExportLoli,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("config_editor_export_loli")
+            ) {
+                Icon(Icons.Outlined.Share, contentDescription = "Export .loli", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(".loli", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
             }
             ObBorderedButton(
                 onClick = { onSave(false) },
