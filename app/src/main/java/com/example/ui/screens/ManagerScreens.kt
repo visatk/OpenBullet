@@ -24,7 +24,7 @@ import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.ListAlt
+import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VerifiedUser
@@ -56,6 +56,19 @@ import com.example.ui.components.ObScrollbarIndicator
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.ObColors
 
+import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import com.example.model.ProxyStatus
+
 @Composable
 fun ProxiesScreen(
     proxies: List<ProxyItem>,
@@ -65,11 +78,14 @@ fun ProxiesScreen(
     onFilterChange: (ProxyProtocol?) -> Unit,
     onAddClick: () -> Unit,
     onToggleCheckProxies: () -> Unit,
+    onRemoveBad: () -> Unit,
+    onExportProxies: () -> Unit,
     onDeleteProxy: (String) -> Unit,
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val visible = if (activeFilter == null) proxies else proxies.filter { it.protocol == activeFilter }
+    val badCount = proxies.count { it.status == ProxyStatus.BAD || it.status == ProxyStatus.BANNED }
 
     Box(
         modifier = modifier
@@ -83,7 +99,9 @@ fun ProxiesScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -103,7 +121,6 @@ fun ProxiesScreen(
                         Text(proto.label, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
                     }
                 }
-                Spacer(Modifier.weight(1f))
                 ObBorderedButton(
                     onClick = onToggleCheckProxies,
                     isActive = isCheckingProxies,
@@ -123,7 +140,26 @@ fun ProxiesScreen(
                         color = ObColors.TextPrimary
                     )
                 }
+                if (badCount > 0) {
+                    ObBorderedButton(
+                        onClick = onRemoveBad,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("proxies_clean_bad_button")
+                    ) {
+                        Icon(Icons.Outlined.CleaningServices, contentDescription = null, tint = ObColors.StatusCustomOrange, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Drop Bad ($badCount)", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                }
                 if (proxies.isNotEmpty()) {
+                    IconButton(
+                        onClick = onExportProxies,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("proxies_export_button")
+                    ) {
+                        Icon(Icons.Outlined.Share, contentDescription = "Export alive proxies", tint = MaterialTheme.colorScheme.primary)
+                    }
                     IconButton(
                         onClick = onClearAll,
                         modifier = Modifier
@@ -270,7 +306,7 @@ fun WordlistsScreen(
 
                         if (wordlists.isEmpty()) {
                             EmptyTableHint(
-                                icon = { Icon(Icons.Outlined.ListAlt, contentDescription = null, tint = ObColors.TextMuted, modifier = Modifier.size(34.dp)) },
+                                icon = { Icon(Icons.AutoMirrored.Outlined.ListAlt, contentDescription = null, tint = ObColors.TextMuted, modifier = Modifier.size(34.dp)) },
                                 title = "No wordlists added",
                                 subtitle = "Tap Add List to pick a .txt file or paste lines."
                             )
@@ -330,6 +366,7 @@ fun ConfigsScreen(
     selectedPreviewId: String?,
     activeRunnerConfigId: String?,
     onNewConfigClick: () -> Unit,
+    onEditConfig: (ConfigItem) -> Unit,
     onSelectPreview: (String) -> Unit,
     onUseInRunner: (ConfigItem) -> Unit,
     onDeleteConfig: (String) -> Unit,
@@ -359,14 +396,26 @@ fun ConfigsScreen(
                     color = ObColors.TextSecondary
                 )
                 if (previewConfig != null) {
-                    ObBorderedButton(
-                        onClick = { onUseInRunner(previewConfig) },
-                        isActive = previewConfig.id == activeRunnerConfigId,
-                        modifier = Modifier.testTag("configs_load_runner_button")
-                    ) {
-                        Icon(Icons.Outlined.PlayArrow, contentDescription = "Load in Runner", tint = ObColors.StatusHitGreen, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Load in Runner", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ObBorderedButton(
+                            onClick = { onEditConfig(previewConfig) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("configs_edit_button")
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = "Edit Config", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Edit", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        }
+                        ObBorderedButton(
+                            onClick = { onUseInRunner(previewConfig) },
+                            isActive = previewConfig.id == activeRunnerConfigId,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("configs_load_runner_button")
+                        ) {
+                            Icon(Icons.Outlined.PlayArrow, contentDescription = "Load in Runner", tint = ObColors.StatusHitGreen, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Load in Runner", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        }
                     }
                 }
             }
@@ -379,6 +428,7 @@ fun ConfigsScreen(
                             configs = configs,
                             selectedId = previewConfig?.id,
                             onSelect = onSelectPreview,
+                            onEdit = onEditConfig,
                             onDelete = onDeleteConfig,
                             modifier = Modifier.weight(0.52f).fillMaxHeight()
                         )
@@ -393,6 +443,7 @@ fun ConfigsScreen(
                             configs = configs,
                             selectedId = previewConfig?.id,
                             onSelect = onSelectPreview,
+                            onEdit = onEditConfig,
                             onDelete = onDeleteConfig,
                             modifier = Modifier.weight(0.55f).fillMaxWidth()
                         )
@@ -410,7 +461,7 @@ fun ConfigsScreen(
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = ObColors.TextPrimary,
             icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-            text = { Text("New Config", style = MaterialTheme.typography.labelLarge) },
+            text = { Text("Config Maker", style = MaterialTheme.typography.labelLarge) },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)
@@ -424,6 +475,7 @@ private fun ConfigTablePanel(
     configs: List<ConfigItem>,
     selectedId: String?,
     onSelect: (String) -> Unit,
+    onEdit: (ConfigItem) -> Unit,
     onDelete: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -435,10 +487,10 @@ private fun ConfigTablePanel(
                     .background(ObColors.SurfaceTableHeader)
                     .padding(horizontal = 12.dp, vertical = 9.dp)
             ) {
-                Text("Name", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.38f))
-                Text("Author", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.24f))
-                Text("Category", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.24f))
-                Spacer(Modifier.width(40.dp))
+                Text("Name", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.36f))
+                Text("Author", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.22f))
+                Text("Category", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.22f))
+                Spacer(Modifier.width(80.dp))
             }
             HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
 
@@ -446,7 +498,7 @@ private fun ConfigTablePanel(
                 EmptyTableHint(
                     icon = { Icon(Icons.Outlined.Code, contentDescription = null, tint = ObColors.TextMuted, modifier = Modifier.size(34.dp)) },
                     title = "No configs found",
-                    subtitle = "Tap New Config to create a blueprint."
+                    subtitle = "Tap Config Maker to build and test a config."
                 )
             } else {
                 LazyColumn(
@@ -463,9 +515,12 @@ private fun ConfigTablePanel(
                                 .padding(horizontal = 12.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(cfg.name, style = MaterialTheme.typography.bodySmall, color = ObColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.38f))
-                            Text(cfg.author, style = MaterialTheme.typography.bodySmall, color = ObColors.TextSecondary, maxLines = 1, modifier = Modifier.weight(0.24f))
-                            Text(cfg.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, modifier = Modifier.weight(0.24f))
+                            Text(cfg.name, style = MaterialTheme.typography.bodySmall, color = ObColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.36f))
+                            Text(cfg.author, style = MaterialTheme.typography.bodySmall, color = ObColors.TextSecondary, maxLines = 1, modifier = Modifier.weight(0.22f))
+                            Text(cfg.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, modifier = Modifier.weight(0.22f))
+                            IconButton(onClick = { onEdit(cfg) }, modifier = Modifier.minimumInteractiveComponentSize()) {
+                                Icon(Icons.Outlined.Edit, contentDescription = "Edit config", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            }
                             IconButton(onClick = { onDelete(cfg.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
                                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete config", tint = ObColors.TextMuted, modifier = Modifier.size(18.dp))
                             }
@@ -502,7 +557,7 @@ private fun ConfigScriptPreviewPanel(
                     .padding(12.dp)
             ) {
                 Text(
-                    text = config?.scriptPreview ?: "# Select or create a config to inspect its blocks.",
+                    text = config?.scriptPreview ?: "# Select or create a config in Config Maker.",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     color = if (config != null) ObColors.TextPrimary else ObColors.TextMuted
                 )
@@ -518,10 +573,13 @@ fun HitsDbScreen(
     typeFilter: ResultTab?,
     onSearchChange: (String) -> Unit,
     onTypeFilterChange: (ResultTab?) -> Unit,
+    onExportHits: () -> Unit,
+    onCopyHit: (HitDbItem) -> Unit,
     onDeleteHit: (String) -> Unit,
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val filtered = hits.filter { item ->
         val matchesType = typeFilter == null || item.type == typeFilter
         val matchesQuery = searchQuery.isBlank() ||
@@ -559,6 +617,11 @@ fun HitsDbScreen(
                 shape = RoundedCornerShape(6.dp),
                 modifier = Modifier.weight(1f)
             )
+            if (hits.isNotEmpty()) {
+                IconButton(onClick = onExportHits, modifier = Modifier.minimumInteractiveComponentSize().testTag("hits_export_button")) {
+                    Icon(Icons.Outlined.Share, contentDescription = "Export Hits", tint = MaterialTheme.colorScheme.primary)
+                }
+            }
             ObBorderedButton(onClick = onClearAll, modifier = Modifier.testTag("hits_clear_button")) {
                 Icon(Icons.Outlined.ClearAll, contentDescription = "Clear Hits DB", tint = ObColors.StatusBadRed, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -566,7 +629,12 @@ fun HitsDbScreen(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             ObBorderedButton(
                 onClick = { onTypeFilterChange(null) },
                 isActive = typeFilter == null,
@@ -595,9 +663,9 @@ fun HitsDbScreen(
                             .padding(horizontal = 12.dp, vertical = 9.dp)
                     ) {
                         Text("Data", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.32f))
-                        Text("Config", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.24f))
+                        Text("Config", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.22f))
                         Text("Captured", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.26f))
-                        Text("Date", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.18f))
+                        Text("Actions", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = ObColors.TextPrimary, modifier = Modifier.weight(0.20f))
                     }
                     HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
 
@@ -613,14 +681,28 @@ fun HitsDbScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .clickable {
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                            cm?.setPrimaryClip(ClipData.newPlainText("OpenBullet Hit", "${hit.data} | ${hit.capturedData}"))
+                                            onCopyHit(hit)
+                                        }
                                         .padding(horizontal = 12.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(hit.data, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.32f))
-                                    Text(hit.configName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.24f))
+                                    Text(hit.configName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.22f))
                                     Text(hit.capturedData, style = MaterialTheme.typography.bodySmall, color = ObColors.StatusHitGreen, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.26f))
-                                    Row(modifier = Modifier.weight(0.18f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(hit.date, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = ObColors.TextMuted, maxLines = 1)
+                                    Row(modifier = Modifier.weight(0.20f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+                                        IconButton(
+                                            onClick = {
+                                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                                cm?.setPrimaryClip(ClipData.newPlainText("OpenBullet Hit", "${hit.data} | ${hit.capturedData}"))
+                                                onCopyHit(hit)
+                                            },
+                                            modifier = Modifier.minimumInteractiveComponentSize()
+                                        ) {
+                                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy hit", tint = ObColors.TextSecondary, modifier = Modifier.size(16.dp))
+                                        }
                                         IconButton(onClick = { onDeleteHit(hit.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
                                             Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete hit", tint = ObColors.TextMuted, modifier = Modifier.size(16.dp))
                                         }

@@ -135,7 +135,100 @@ data class SettingsState(
     val showTimestampsInConsole: Boolean = false,
     val soundOnHit: Boolean = true,
     val soundOnFinish: Boolean = false,
+    val keepAwakeEnabled: Boolean = true,
+    val proxyJudgeUrl: String = "https://httpbin.org/ip",
     val accentHex: Long = 0xFF2F94E8
+)
+
+enum class ConfigEditorSubTab(val label: String) {
+    STACKER("Stacker"),
+    SCRIPT("LoliScript"),
+    DEBUGGER("Debugger")
+}
+
+enum class ParseMode(val label: String) {
+    LR("LR"),
+    REGEX("REGEX"),
+    JSON("JSON")
+}
+
+enum class ScriptFunctionType(val label: String, val loliKeyword: String) {
+    SHA256("SHA-256", "SHA256"),
+    MD5("MD5", "MD5"),
+    BASE64_ENCODE("Base64 Encode", "BASE64ENCODE"),
+    BASE64_DECODE("Base64 Decode", "BASE64DECODE"),
+    URL_ENCODE("URL Encode", "URLENCODE"),
+    URL_DECODE("URL Decode", "URLDECODE"),
+    UPPERCASE("Uppercase", "UPPERCASE"),
+    LOWERCASE("Lowercase", "LOWERCASE")
+}
+
+sealed interface ConfigBlock {
+    val id: String
+
+    data class RequestBlock(
+        override val id: String,
+        val method: String = "GET",
+        val url: String = "https://httpbin.org/get?user=<USER>",
+        val headersText: String = "Accept: application/json",
+        val contentType: String = "application/x-www-form-urlencoded",
+        val postBody: String = "",
+        val followRedirects: Boolean = true
+    ) : ConfigBlock
+
+    data class ParseBlock(
+        override val id: String,
+        val sourceVar: String = "<SOURCE>",
+        val mode: ParseMode = ParseMode.LR,
+        val leftOrPattern: String = "\"origin\": \"",
+        val right: String = "\"",
+        val outputName: String = "Origin",
+        val isCapture: Boolean = true
+    ) : ConfigBlock
+
+    data class KeyCheckBlock(
+        override val id: String,
+        val successKeys: List<String> = listOf("HTTP/200"),
+        val customKeys: List<String> = emptyList(),
+        val failureKeys: List<String> = listOf("Unauthorized", "Invalid"),
+        val retryKeys: List<String> = listOf("HTTP/429", "Too Many Requests", "Cloudflare")
+    ) : ConfigBlock
+
+    data class FunctionBlock(
+        override val id: String,
+        val functionType: ScriptFunctionType = ScriptFunctionType.BASE64_ENCODE,
+        val inputTemplate: String = "<USER>:<PASS>",
+        val outputVar: String = "AUTH_B64"
+    ) : ConfigBlock
+}
+
+data class ConfigDebugResult(
+    val outcomeType: String,
+    val statusLabel: String,
+    val httpCode: Int,
+    val latencyMs: Long,
+    val proxyUsed: String,
+    val captures: Map<String, String>,
+    val variables: Map<String, String>,
+    val traceLogs: List<String>,
+    val responseBodyPreview: String
+)
+
+data class ConfigEditorState(
+    val configId: String,
+    val isNew: Boolean = true,
+    val name: String = "",
+    val author: String = "LocalUser",
+    val category: String = "Default",
+    val wordlistType: String = "Mail:Pass",
+    val needsProxies: Boolean = true,
+    val activeSubTab: ConfigEditorSubTab = ConfigEditorSubTab.STACKER,
+    val blocks: List<ConfigBlock> = emptyList(),
+    val rawScript: String = "",
+    val testDataInput: String = "alice@example.com:secret123",
+    val debugUseProxy: Boolean = false,
+    val isDebugging: Boolean = false,
+    val debugResult: ConfigDebugResult? = null
 )
 
 data class ToolsState(
@@ -201,6 +294,7 @@ data class OpenBulletUiState(
     val hitsSearchQuery: String = "",
     val hitsTypeFilter: ResultTab? = null,
     val selectedConfigPreviewId: String? = null,
+    val configEditor: ConfigEditorState? = null,
     val settings: SettingsState = SettingsState(),
     val tools: ToolsState = ToolsState(),
     val nativeEngineBanner: String = "",

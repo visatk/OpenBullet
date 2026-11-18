@@ -42,8 +42,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.automirrored.filled.ListAlt
+import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -53,7 +54,6 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.HistoryToggleOff
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.ListAlt
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
@@ -110,7 +110,7 @@ import com.example.ui.theme.ObColors
 fun MainTab.icon(selected: Boolean): ImageVector = when (this) {
     MainTab.RUNNER -> if (selected) Icons.Filled.PlayArrow else Icons.Outlined.PlayArrow
     MainTab.PROXIES -> if (selected) Icons.Filled.Dns else Icons.Outlined.Dns
-    MainTab.WORDLISTS -> if (selected) Icons.Filled.ListAlt else Icons.Outlined.ListAlt
+    MainTab.WORDLISTS -> if (selected) Icons.AutoMirrored.Filled.ListAlt else Icons.AutoMirrored.Outlined.ListAlt
     MainTab.CONFIGS -> if (selected) Icons.Filled.Code else Icons.Outlined.Code
     MainTab.HITS_DB -> if (selected) Icons.Filled.VerifiedUser else Icons.Outlined.VerifiedUser
     MainTab.TOOLS -> if (selected) Icons.Filled.Build else Icons.Outlined.Build

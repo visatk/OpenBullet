@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import com.example.data.OpenBulletRepository
 import com.example.model.ActiveDialog
+import com.example.model.ConfigBlock
+import com.example.model.ConfigEditorSubTab
 import com.example.model.ConfigItem
 import com.example.model.MainTab
 import com.example.model.OpenBulletUiState
@@ -14,15 +16,13 @@ import com.example.model.ProxyItem
 import com.example.model.ProxyMode
 import com.example.model.ProxyProtocol
 import com.example.model.ProxyStatus
-import com.example.model.ResultRow
 import com.example.model.ResultTab
 import com.example.model.SettingsSection
 import com.example.model.ToolsSection
 import com.example.model.WordlistItem
-import com.example.model.WorkerRow
 import com.example.nativeengine.NativeScannerBridge
-import com.example.network.LoliScriptParser
-import com.example.ui.theme.ObColors
+import com.example.network.ConfigTemplates
+import com.example.network.HttpExecutionEngine
 import com.example.worker.ProxyCheckWorker
 import com.example.worker.RunnerJobWorker
 import java.security.MessageDigest
@@ -30,11 +30,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class OpenBulletViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -50,6 +52,9 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
     private var lastObservedWorkLog: String? = null
     private var lastWorkerPacket: String? = null
     private var lastResultPacket: String? = null
+    private var lastObservedHitsCount: Int = 0
+    private var savedSelectedConfigId: String? = null
+    private var savedSelectedWordlistId: String? = null
 
     init {
         observeRoomStreams()
@@ -60,9 +65,8 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             repository.configsFlow.collect { configs ->
                 _uiState.update { current ->
-                    val updatedSelected = current.selectedConfig?.let { sel ->
-                        configs.firstOrNull { it.id == sel.id }
-                    }
+                    val targetCfgId = current.selectedConfig?.id ?: savedSelectedConfigId
+                    val updatedSelected = targetCfgId?.let { id -> configs.firstOrNull { it.id == id } }
                     val updatedPreviewId = current.selectedConfigPreviewId?.takeIf { id ->
                         configs.any { it.id == id }
                     } ?: configs.firstOrNull()?.id
@@ -78,12 +82,13 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             repository.wordlistsFlow.collect { wordlists ->
                 _uiState.update { current ->
-                    val updatedSelected = current.selectedWordlist?.let { sel ->
-                        wordlists.firstOrNull { it.id == sel.id }
-                    }
+                    val targetListId = current.selectedWordlist?.id ?: savedSelectedWordlistId
+                    val updatedSelected = targetListId?.let { id -> wordlists.firstOrNull { it.id == id } }
                     current.copy(
                         wordlists = wordlists,
-                        selectedWordlist = updatedSelected
+                        selectedWordlist = updatedSelected,
+                        progressTotal = if (current.progressTotal == 0 && updatedSelected != null) updatedSelected.lineCount else current.progressTotal,
+                        stats = if (current.stats.dataTotal == 0 && updatedSelected != null) current.stats.copy(dataTotal = updatedSelected.lineCount) else current.stats
                     )
                 }
             }
@@ -109,13 +114,51 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             repository.settingsFlow.collect { entity ->
                 if (entity != null) {
+                    savedSelectedConfigId = entity.selectedConfigId
+                    savedSelectedWordlistId = entity.selectedWordlistId
                     _uiState.update { current ->
+                        val resolvedCfg = current.selectedConfig
+                            ?: entity.selectedConfigId?.let { id -> current.configs.firstOrNull { it.id == id } }
+                        val resolvedList = current.selectedWordlist
+                            ?: entity.selectedWordlistId?.let { id -> current.wordlists.firstOrNull { it.id == id } }
                         current.copy(
                             settings = entity.toSettingsState(current.settings),
                             startLine = entity.startLine,
                             botsCount = entity.botsCount,
-                            proxyMode = runCatching { ProxyMode.valueOf(entity.proxyMode) }.getOrDefault(ProxyMode.DEF)
+                            proxyMode = runCatching { ProxyMode.valueOf(entity.proxyMode) }.getOrDefault(ProxyMode.DEF),
+                            selectedConfig = resolvedCfg,
+                            selectedWordlist = resolvedList
                         )
+                    }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            repository.runnerSessionFlow.collect { session ->
+                if (session != null) {
+                    _uiState.update { current ->
+                        // Restore telemetry if UI just reopened or was recreated in background
+                        if (current.progressCurrent == 0 && session.progressTotal > 0) {
+                            val restoredWorkers = RunnerPacketHelper.unpackWorkers(session.workersPacked)
+                            val restoredResults = RunnerPacketHelper.unpackResults(session.resultsPacked)
+                            current.copy(
+                                progressCurrent = session.progressCurrent,
+                                progressTotal = session.progressTotal,
+                                elapsedSeconds = session.elapsedSeconds,
+                                workerRows = if (current.workerRows.isEmpty()) restoredWorkers else current.workerRows,
+                                resultRows = if (current.resultRows.isEmpty()) restoredResults else current.resultRows,
+                                stats = current.stats.copy(
+                                    dataTotal = session.progressTotal,
+                                    dataHits = session.hits,
+                                    dataCustom = session.custom,
+                                    dataBad = session.bad,
+                                    dataRetries = session.retries,
+                                    dataToCheck = session.toCheck,
+                                    cpm = session.cpm
+                                )
+                            )
+                        } else current
                     }
                 }
             }
@@ -146,6 +189,11 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                         val packedResults = p.getString(RunnerJobWorker.KEY_RESULTS_PACKED).orEmpty()
                         val logLine = p.getString(RunnerJobWorker.KEY_LOG_LINE)
 
+                        if (hits > lastObservedHitsCount && _uiState.value.settings.soundOnHit) {
+                            RunnerPacketHelper.playAlertTone(isHit = true)
+                        }
+                        lastObservedHitsCount = hits
+
                         _uiState.update { state ->
                             val nextLogs = if (!logLine.isNullOrBlank() && logLine != lastObservedWorkLog) {
                                 lastObservedWorkLog = logLine
@@ -154,12 +202,12 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
 
                             val nextWorkers = if (packedWorkers.isNotEmpty() && packedWorkers != lastWorkerPacket) {
                                 lastWorkerPacket = packedWorkers
-                                unpackWorkers(packedWorkers)
+                                RunnerPacketHelper.unpackWorkers(packedWorkers)
                             } else state.workerRows
 
                             val nextResults = if (packedResults.isNotEmpty() && packedResults != lastResultPacket) {
                                 lastResultPacket = packedResults
-                                (state.resultRows + unpackResults(packedResults)).takeLast(250)
+                                (state.resultRows + RunnerPacketHelper.unpackResults(packedResults)).takeLast(250)
                             } else state.resultRows
 
                             state.copy(
@@ -195,8 +243,12 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                         val cpm = out.getInt(RunnerJobWorker.KEY_CPM, _uiState.value.stats.cpm)
                         val elapsed = out.getLong(RunnerJobWorker.KEY_ELAPSED_SEC, _uiState.value.elapsedSeconds)
 
+                        val wasRunning = _uiState.value.isRunning
+                        if (wasRunning && _uiState.value.settings.soundOnFinish) {
+                            RunnerPacketHelper.playAlertTone(isHit = false)
+                        }
+
                         _uiState.update { state ->
-                            val wasRunning = state.isRunning
                             val nextLogs = if (wasRunning && !logLine.isNullOrBlank() && logLine != lastObservedWorkLog) {
                                 lastObservedWorkLog = logLine
                                 appendLog(state, logLine)
@@ -226,15 +278,8 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                     WorkInfo.State.FAILED -> {
                         _uiState.update { state ->
                             if (!state.isRunning) return@update state
-                            val reason = if (info.state == WorkInfo.State.CANCELLED) {
-                                "Runner job stopped."
-                            } else {
-                                "Runner job failed."
-                            }
-                            state.copy(
-                                isRunning = false,
-                                consoleLogs = appendLog(state, reason)
-                            )
+                            val reason = if (info.state == WorkInfo.State.CANCELLED) "Runner job stopped." else "Runner job failed."
+                            state.copy(isRunning = false, consoleLogs = appendLog(state, reason))
                         }
                     }
                 }
@@ -246,24 +291,15 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                 val info = infos.firstOrNull() ?: return@collect
                 when (info.state) {
                     WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
-                        _uiState.update {
-                            it.copy(isCheckingProxies = true, proxyCheckStatusText = "Queued...")
-                        }
+                        _uiState.update { it.copy(isCheckingProxies = true, proxyCheckStatusText = "Queued...") }
                     }
                     WorkInfo.State.RUNNING -> {
                         val checked = info.progress.getInt(ProxyCheckWorker.KEY_CHECKED, 0)
                         val total = info.progress.getInt(ProxyCheckWorker.KEY_TOTAL, 0)
-                        _uiState.update {
-                            it.copy(
-                                isCheckingProxies = true,
-                                proxyCheckStatusText = "Checking $checked / $total"
-                            )
-                        }
+                        _uiState.update { it.copy(isCheckingProxies = true, proxyCheckStatusText = "Checking $checked / $total") }
                     }
                     WorkInfo.State.SUCCEEDED, WorkInfo.State.CANCELLED, WorkInfo.State.FAILED -> {
-                        _uiState.update {
-                            it.copy(isCheckingProxies = false, proxyCheckStatusText = "")
-                        }
+                        _uiState.update { it.copy(isCheckingProxies = false, proxyCheckStatusText = "") }
                     }
                 }
             }
@@ -272,10 +308,13 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectTab(tab: MainTab) {
         _uiState.update { current ->
-            if (current.activeTab == tab) return@update current
+            if (current.activeTab == tab && current.configEditor == null) return@update current
             current.copy(
                 activeTab = tab,
-                tabHistory = (current.tabHistory + current.activeTab).takeLast(12)
+                configEditor = null,
+                tabHistory = if (current.activeTab != tab) {
+                    (current.tabHistory + current.activeTab).takeLast(12)
+                } else current.tabHistory
             )
         }
     }
@@ -287,14 +326,13 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                 dismissDialog()
                 true
             }
+            current.configEditor != null -> {
+                closeConfigEditor()
+                true
+            }
             current.tabHistory.isNotEmpty() -> {
                 val previous = current.tabHistory.last()
-                _uiState.update {
-                    it.copy(
-                        activeTab = previous,
-                        tabHistory = it.tabHistory.dropLast(1)
-                    )
-                }
+                _uiState.update { it.copy(activeTab = previous, tabHistory = it.tabHistory.dropLast(1)) }
                 true
             }
             current.activeTab != MainTab.RUNNER -> {
@@ -319,10 +357,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectProxyMode(mode: ProxyMode) {
         _uiState.update { current ->
-            current.copy(
-                proxyMode = mode,
-                consoleLogs = appendLog(current, "Proxy mode set to ${mode.label}")
-            )
+            current.copy(proxyMode = mode, consoleLogs = appendLog(current, "Proxy mode set to ${mode.label}"))
         }
         viewModelScope.launch { repository.saveSettings { it.copy(proxyMode = mode.name) } }
     }
@@ -340,6 +375,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun selectConfig(config: ConfigItem?) {
+        savedSelectedConfigId = config?.id
         _uiState.update { current ->
             val msg = if (config != null) "Loaded config: ${config.name}" else "Cleared selected config"
             current.copy(
@@ -348,9 +384,11 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                 consoleLogs = appendLog(current, msg)
             )
         }
+        viewModelScope.launch { repository.saveSettings { it.copy(selectedConfigId = config?.id) } }
     }
 
     fun selectWordlist(wordlist: WordlistItem?) {
+        savedSelectedWordlistId = wordlist?.id
         _uiState.update { current ->
             val total = wordlist?.lineCount ?: 0
             val msg = if (wordlist != null) "Loaded wordlist: ${wordlist.name} ($total lines)" else "Cleared selected wordlist"
@@ -363,6 +401,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                 consoleLogs = appendLog(current, msg)
             )
         }
+        viewModelScope.launch { repository.saveSettings { it.copy(selectedWordlistId = wordlist?.id) } }
     }
 
     fun toggleStartStop() {
@@ -372,7 +411,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update {
                 it.copy(
                     isRunning = false,
-                    consoleLogs = appendLog(it, "Cancelling Runner WorkManager job...")
+                    consoleLogs = appendLog(it, "Stopping Runner Foreground Service...")
                 )
             }
             return
@@ -407,9 +446,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         lastObservedWorkLog = null
         lastWorkerPacket = null
         lastResultPacket = null
-
-        val parsed = LoliScriptParser.parse(cfg.scriptPreview)
-        val requiresNetwork = parsed.targetUrl.isNotBlank()
+        lastObservedHitsCount = 0
 
         _uiState.update {
             it.copy(
@@ -428,14 +465,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                     dataToCheck = 0,
                     cpm = 0
                 ),
-                consoleLogs = appendLog(
-                    it,
-                    if (requiresNetwork) {
-                        "Enqueued WorkManager + OkHttp job for '${cfg.name}'..."
-                    } else {
-                        "Enqueued WorkManager local scan job for '${cfg.name}'..."
-                    }
-                )
+                consoleLogs = appendLog(it, "Started Foreground Runner for '${cfg.name}' (keep-awake=${current.settings.keepAwakeEnabled})...")
             )
         }
 
@@ -444,8 +474,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             wordlistId = list.id,
             startLine = current.startLine,
             botsCount = current.botsCount,
-            proxyMode = current.proxyMode,
-            requiresNetwork = requiresNetwork
+            proxyMode = current.proxyMode
         )
     }
 
@@ -454,10 +483,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             val msg = if (next) "Console timestamps enabled." else "Console timestamps disabled."
             val updated = current.copy(settings = current.settings.copy(showTimestampsInConsole = next))
-            updated.copy(
-                consoleLogs = appendLog(updated, msg),
-                statusBannerMessage = msg
-            )
+            updated.copy(consoleLogs = appendLog(updated, msg), statusBannerMessage = msg)
         }
         viewModelScope.launch { repository.saveSettings { it.copy(showTimestampsInConsole = next) } }
     }
@@ -466,10 +492,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         val state = _uiState.value
         val summary = "Snapshot -> Bots: ${state.botsCount}, Prog: ${state.progressCurrent}/${state.progressTotal}, Hits: ${state.stats.dataHits}, Engine: ${state.nativeEngineBanner}"
         _uiState.update {
-            it.copy(
-                consoleLogs = appendLog(it, summary),
-                statusBannerMessage = "UI snapshot logged to console"
-            )
+            it.copy(consoleLogs = appendLog(it, summary), statusBannerMessage = "UI snapshot logged to console")
         }
     }
 
@@ -477,9 +500,181 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(statusBannerMessage = null) }
     }
 
+    fun showBannerMessage(message: String) {
+        _uiState.update { it.copy(statusBannerMessage = message) }
+    }
+
     fun clearConsoleLogs() {
+        _uiState.update { it.copy(consoleLogs = listOf("Runner initialized succesfully!")) }
+    }
+
+    // --- Config Editor / Maker ---
+    fun openConfigEditor(existing: ConfigItem? = null) {
         _uiState.update {
-            it.copy(consoleLogs = listOf("Runner initialized succesfully!"))
+            it.copy(
+                activeTab = MainTab.CONFIGS,
+                activeDialog = ActiveDialog.None,
+                configEditor = ConfigEditorHelper.createInitialState(existing)
+            )
+        }
+    }
+
+    fun closeConfigEditor() {
+        _uiState.update { it.copy(configEditor = null) }
+    }
+
+    fun applyTemplateToEditor(preset: ConfigTemplates.TemplatePreset) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            current.copy(
+                configEditor = ConfigEditorHelper.applyPreset(ed, preset),
+                statusBannerMessage = "Loaded template: ${preset.title}"
+            )
+        }
+    }
+
+    fun updateEditorMetadata(
+        name: String? = null,
+        author: String? = null,
+        category: String? = null,
+        wordlistType: String? = null,
+        needsProxies: Boolean? = null
+    ) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            current.copy(
+                configEditor = ed.copy(
+                    name = name ?: ed.name,
+                    author = author ?: ed.author,
+                    category = category ?: ed.category,
+                    wordlistType = wordlistType ?: ed.wordlistType,
+                    needsProxies = needsProxies ?: ed.needsProxies
+                )
+            )
+        }
+    }
+
+    fun selectEditorSubTab(subTab: ConfigEditorSubTab) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            current.copy(configEditor = ConfigEditorHelper.switchSubTab(ed, subTab))
+        }
+    }
+
+    fun updateEditorRawScript(script: String) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            current.copy(configEditor = ed.copy(rawScript = script))
+        }
+    }
+
+    fun addBlockToEditor(kind: String) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            val newBlock = ConfigEditorHelper.createDefaultBlock(kind)
+            current.copy(configEditor = ed.copy(blocks = ed.blocks + newBlock))
+        }
+    }
+
+    fun updateBlockInEditor(index: Int, updated: ConfigBlock) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            if (index !in ed.blocks.indices) return@update current
+            val nextBlocks = ed.blocks.toMutableList().apply { set(index, updated) }
+            current.copy(configEditor = ed.copy(blocks = nextBlocks))
+        }
+    }
+
+    fun moveBlockInEditor(fromIndex: Int, toIndex: Int) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            if (fromIndex !in ed.blocks.indices || toIndex !in ed.blocks.indices) return@update current
+            val list = ed.blocks.toMutableList()
+            val item = list.removeAt(fromIndex)
+            list.add(toIndex, item)
+            current.copy(configEditor = ed.copy(blocks = list))
+        }
+    }
+
+    fun deleteBlockFromEditor(index: Int) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            if (index !in ed.blocks.indices) return@update current
+            val list = ed.blocks.toMutableList().apply { removeAt(index) }
+            current.copy(configEditor = ed.copy(blocks = list))
+        }
+    }
+
+    fun updateEditorDebugInputs(testData: String? = null, useProxy: Boolean? = null) {
+        _uiState.update { current ->
+            val ed = current.configEditor ?: return@update current
+            current.copy(
+                configEditor = ed.copy(
+                    testDataInput = testData ?: ed.testDataInput,
+                    debugUseProxy = useProxy ?: ed.debugUseProxy
+                )
+            )
+        }
+    }
+
+    fun runConfigDebug() {
+        val state = _uiState.value
+        val ed = state.configEditor ?: return
+        val synced = ConfigEditorHelper.switchSubTab(ed, ConfigEditorSubTab.DEBUGGER)
+        val scriptText = ConfigEditorHelper.syncScriptForSave(ed)
+        val chosenProxy = if (ed.debugUseProxy) RunnerPacketHelper.chooseDebugProxy(state.proxies) else null
+        val timeoutSec = state.settings.requestTimeoutSec
+
+        _uiState.update {
+            it.copy(configEditor = synced.copy(isDebugging = true, debugResult = null))
+        }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                HttpExecutionEngine.executeDebug(
+                    rawLine = ed.testDataInput.ifBlank { "test@example.com:password123" },
+                    scriptText = scriptText,
+                    timeoutSec = timeoutSec,
+                    proxyItem = chosenProxy
+                )
+            }
+            _uiState.update { cur ->
+                val curEd = cur.configEditor ?: return@update cur
+                cur.copy(configEditor = curEd.copy(isDebugging = false, debugResult = result))
+            }
+        }
+    }
+
+    fun saveEditedConfig(loadInRunner: Boolean) {
+        val ed = _uiState.value.configEditor ?: return
+        val finalScript = ConfigEditorHelper.syncScriptForSave(ed)
+        val cleanName = ed.name.trim().ifEmpty { "Untitled Config" }
+        val config = ConfigItem(
+            id = ed.configId,
+            name = cleanName,
+            author = ed.author.trim().ifEmpty { "LocalUser" },
+            category = ed.category.trim().ifEmpty { "Default" },
+            wordlistType = ed.wordlistType.trim().ifEmpty { "Default" },
+            needsProxies = ed.needsProxies,
+            lastModified = currentDateString(),
+            scriptPreview = finalScript
+        )
+
+        viewModelScope.launch { repository.saveConfig(config) }
+        if (loadInRunner) {
+            savedSelectedConfigId = config.id
+            viewModelScope.launch { repository.saveSettings { it.copy(selectedConfigId = config.id) } }
+        }
+
+        _uiState.update { current ->
+            current.copy(
+                selectedConfigPreviewId = config.id,
+                selectedConfig = if (loadInRunner) config else current.selectedConfig,
+                configEditor = null,
+                activeTab = if (loadInRunner) MainTab.RUNNER else current.activeTab,
+                consoleLogs = appendLog(current, "Saved config '$cleanName' (${if (loadInRunner) "loaded in Runner" else "Room DB"})."),
+                statusBannerMessage = if (loadInRunner) "Saved & loaded '$cleanName'" else "Saved config '$cleanName'"
+            )
         }
     }
 
@@ -501,13 +696,9 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             wordlistType = wordlistType.trim().ifEmpty { "Default" },
             needsProxies = needsProxies,
             lastModified = currentDateString(),
-            scriptPreview = scriptPreview.ifBlank {
-                "# LoliScript HTTP Check\nREQUEST GET \"https://httpbin.org/get?user=<USER>\"\nHEADER \"Accept: application/json\"\nKEYCHECK\n  KEYCHAIN Success OR\n    KEY \"HTTP/200\"\nPARSE \"<SOURCE>\" LR \"\\\"origin\\\": \\\"\" \"\\\"\" -> CAP \"Origin\""
-            }
+            scriptPreview = scriptPreview.ifBlank { ConfigTemplates.presets.first().script }
         )
-        viewModelScope.launch {
-            repository.saveConfig(config)
-        }
+        viewModelScope.launch { repository.saveConfig(config) }
         _uiState.update { current ->
             current.copy(
                 selectedConfigPreviewId = config.id,
@@ -525,7 +716,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.deleteConfig(id) }
     }
 
-    // --- Wordlists CRUD (Room + Retrofit Remote Import) ---
+    // --- Wordlists CRUD (Room + SAF + Tools export) ---
     fun addWordlist(name: String, type: String, purpose: String, rawText: String) {
         val cleanLines = rawText
             .lineSequence()
@@ -545,6 +736,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             current.copy(
                 activeDialog = ActiveDialog.None,
+                statusBannerMessage = "Saved wordlist '$cleanName' (${cleanLines.size} lines)",
                 consoleLogs = appendLog(current, "Saved wordlist '$cleanName' (${cleanLines.size} lines) to Room DB.")
             )
         }
@@ -586,6 +778,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { current ->
             current.copy(
                 activeDialog = ActiveDialog.None,
+                statusBannerMessage = "Imported ${parsed.size} ${protocol.label} proxies",
                 consoleLogs = appendLog(current, "Saved ${parsed.size} ${protocol.label} proxy entries to Room DB.")
             )
         }
@@ -596,10 +789,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _uiState.update { it.copy(statusBannerMessage = "Fetching proxies via Retrofit...") }
             repository.fetchRemoteText(url.trim())
-                .onSuccess { text ->
-                    addProxies(text, protocol)
-                    _uiState.update { it.copy(statusBannerMessage = "Imported proxies from URL") }
-                }
+                .onSuccess { text -> addProxies(text, protocol) }
                 .onFailure { err ->
                     _uiState.update {
                         it.copy(
@@ -621,11 +811,12 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update { it.copy(statusBannerMessage = "Import proxies before checking") }
             return
         }
-        repository.enqueueProxyCheck()
+        val judgeUrl = _uiState.value.settings.proxyJudgeUrl.ifBlank { "https://httpbin.org/ip" }
+        repository.enqueueProxyCheck(probeUrl = judgeUrl)
         _uiState.update {
             it.copy(
                 isCheckingProxies = true,
-                consoleLogs = appendLog(it, "Started WorkManager OkHttp proxy check.")
+                consoleLogs = appendLog(it, "Started Foreground Proxy Check against $judgeUrl.")
             )
         }
     }
@@ -638,8 +829,20 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.deleteProxy(id) }
     }
 
+    fun removeBadAndBannedProxies() {
+        viewModelScope.launch { repository.deleteBadAndBannedProxies() }
+        _uiState.update { it.copy(statusBannerMessage = "Removed Dead & Banned proxies") }
+    }
+
     fun clearProxies() {
         viewModelScope.launch { repository.clearProxies() }
+    }
+
+    fun buildAliveProxiesExportText(): String {
+        val list = _uiState.value.proxies
+        val alive = list.filter { it.status == ProxyStatus.AVAILABLE }
+        val exportList = alive.ifEmpty { list }
+        return exportList.joinToString("\n") { "${it.host}:${it.port}" }
     }
 
     // --- Hits DB (Room) ---
@@ -657,6 +860,18 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearHitsDb() {
         viewModelScope.launch { repository.clearHitsDb() }
+    }
+
+    fun buildHitsExportText(): String {
+        val state = _uiState.value
+        val filtered = state.hitsDb.filter { item ->
+            val matchesType = state.hitsTypeFilter == null || item.type == state.hitsTypeFilter
+            val matchesQuery = state.hitsSearchQuery.isBlank() ||
+                item.data.contains(state.hitsSearchQuery, ignoreCase = true) ||
+                item.configName.contains(state.hitsSearchQuery, ignoreCase = true)
+            matchesType && matchesQuery
+        }
+        return filtered.joinToString("\n") { "${it.data} | ${it.capturedData} | [${it.configName}]" }
     }
 
     // --- Tools (List Cleaner, Formatter, Regex, Hash, Native Scanner & OkHttp/Retrofit Probe) ---
@@ -686,9 +901,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         if (t.cleanerTrimWhitespace) lines = lines.map { it.trim() }
         if (t.cleanerRemoveEmpty) lines = lines.filter { it.isNotEmpty() }
         if (t.cleanerRemoveDuplicates) lines = lines.distinct()
-        _uiState.update {
-            it.copy(tools = it.tools.copy(cleanerOutput = lines.joinToString("\n")))
-        }
+        _uiState.update { it.copy(tools = it.tools.copy(cleanerOutput = lines.joinToString("\n"))) }
     }
 
     fun updateFormatterInput(text: String) {
@@ -711,14 +924,10 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                     val left = parts[0].trim()
                     val right = parts[1].trim()
                     if (swapOrder) "$right$sep$left" else "$left$sep$right"
-                } else {
-                    line
-                }
+                } else line
             }
             .joinToString("\n")
-        _uiState.update {
-            it.copy(tools = it.tools.copy(formatterOutput = formatted))
-        }
+        _uiState.update { it.copy(tools = it.tools.copy(formatterOutput = formatted)) }
     }
 
     fun updateRegexInputs(pattern: String? = null, testInput: String? = null) {
@@ -731,13 +940,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         }.getOrDefault(listOf("Invalid Regex"))
 
         _uiState.update {
-            it.copy(
-                tools = it.tools.copy(
-                    regexPattern = nextPattern,
-                    regexTestInput = nextInput,
-                    regexMatches = matches
-                )
-            )
+            it.copy(tools = it.tools.copy(regexPattern = nextPattern, regexTestInput = nextInput, regexMatches = matches))
         }
     }
 
@@ -767,9 +970,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _uiState.update { it.copy(tools = it.tools.copy(isProbing = true, probeResult = "Probing $url...")) }
             repository.runHttpProbe(url)
-                .onSuccess { res ->
-                    _uiState.update { it.copy(tools = it.tools.copy(isProbing = false, probeResult = res)) }
-                }
+                .onSuccess { res -> _uiState.update { it.copy(tools = it.tools.copy(isProbing = false, probeResult = res)) } }
                 .onFailure { err ->
                     _uiState.update {
                         it.copy(tools = it.tools.copy(isProbing = false, probeResult = "Error: ${err.message ?: err.javaClass.simpleName}"))
@@ -778,11 +979,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun updateNativeDiagnosticFields(
-        sampleBody: String? = null,
-        successKey: String? = null,
-        failureKey: String? = null
-    ) {
+    fun updateNativeDiagnosticFields(sampleBody: String? = null, successKey: String? = null, failureKey: String? = null) {
         val cur = _uiState.value.tools
         _uiState.update {
             it.copy(
@@ -807,9 +1004,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         val analysis = NativeScannerBridge.analyzeComboLine(t.nativeSampleBody.lineSequence().firstOrNull().orEmpty())
         val elapsedUs = (System.nanoTime() - startNs) / 1000L
         val summary = "Outcome=${outcome.label} | Key=${matched ?: "None"} | FNV1a=${analysis.fnv1aHashHex.take(8)} | ${elapsedUs}us"
-        _uiState.update {
-            it.copy(tools = it.tools.copy(nativeScanSummary = summary))
-        }
+        _uiState.update { it.copy(tools = it.tools.copy(nativeScanSummary = summary)) }
     }
 
     // --- Settings (Room) ---
@@ -829,6 +1024,11 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.saveSettings { it.copy(maxRetries = clamped) } }
     }
 
+    fun updateProxyJudgeUrl(url: String) {
+        _uiState.update { it.copy(settings = it.settings.copy(proxyJudgeUrl = url)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(proxyJudgeUrl = url.trim()) } }
+    }
+
     fun toggleSettingAutoSave(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(autoSaveHits = v)) }
         viewModelScope.launch { repository.saveSettings { it.copy(autoSaveHits = v) } }
@@ -837,6 +1037,11 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
     fun toggleSettingIgnoreEmpty(v: Boolean) {
         _uiState.update { it.copy(settings = it.settings.copy(ignoreEmptyLines = v)) }
         viewModelScope.launch { repository.saveSettings { it.copy(ignoreEmptyLines = v) } }
+    }
+
+    fun toggleKeepAwake(v: Boolean) {
+        _uiState.update { it.copy(settings = it.settings.copy(keepAwakeEnabled = v)) }
+        viewModelScope.launch { repository.saveSettings { it.copy(keepAwakeEnabled = v) } }
     }
 
     fun toggleSettingSoundOnHit(v: Boolean) {
@@ -854,45 +1059,6 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.saveSettings { it.copy(accentHex = hex) } }
     }
 
-    private fun unpackWorkers(packed: String): List<WorkerRow> {
-        if (packed.isBlank()) return emptyList()
-        return packed.split("\u001E").mapNotNull { entry ->
-            val parts = entry.split("\u001F")
-            if (parts.size < 5) return@mapNotNull null
-            val id = parts[0].toIntOrNull() ?: return@mapNotNull null
-            val color = when (parts[4]) {
-                "HIT" -> ObColors.StatusHitGreen
-                "CUSTOM" -> ObColors.StatusCustomOrange
-                "BAD" -> ObColors.StatusBadRed
-                "RETRY" -> ObColors.StatusRetryYellow
-                else -> ObColors.StatusToCheckAqua
-            }
-            WorkerRow(
-                id = id,
-                data = parts[1],
-                proxy = parts[2],
-                status = parts[3],
-                statusColor = color
-            )
-        }
-    }
-
-    private fun unpackResults(packed: String): List<ResultRow> {
-        if (packed.isBlank()) return emptyList()
-        return packed.split("\u001E").mapNotNull { entry ->
-            val parts = entry.split("\u001F")
-            if (parts.size < 5) return@mapNotNull null
-            val cat = runCatching { ResultTab.valueOf(parts[4]) }.getOrDefault(ResultTab.TO_CHECK)
-            ResultRow(
-                time = parts[0],
-                data = parts[1],
-                proxy = parts[2],
-                capturedData = parts[3],
-                category = cat
-            )
-        }
-    }
-
     private fun recalculateProxyStats(
         list: List<ProxyItem>,
         current: com.example.model.RunnerStats
@@ -904,17 +1070,10 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     private fun appendLog(state: OpenBulletUiState, message: String): List<String> {
-        val line = if (state.settings.showTimestampsInConsole) {
-            "[${currentClockString()}] $message"
-        } else {
-            message
-        }
+        val line = if (state.settings.showTimestampsInConsole) "[${currentClockString()}] $message" else message
         return (state.consoleLogs + line).takeLast(100)
     }
 
-    private fun currentClockString(): String =
-        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-
-    private fun currentDateString(): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private fun currentClockString(): String = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+    private fun currentDateString(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 }

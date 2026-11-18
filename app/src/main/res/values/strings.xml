@@ -54,4 +54,8 @@
     <string name="stats_banned">Banned:</string>
     <string name="stats_cpm">CPM:</string>
     <string name="stats_credit">Credit:</string>
+
+    <string name="notif_channel_runner_name">OpenBullet Background Engine</string>
+    <string name="notif_channel_runner_desc">Keeps Runner and Proxy Checker active when backgrounded or screen is off</string>
+    <string name="notif_action_stop">STOP</string>
 </resources>

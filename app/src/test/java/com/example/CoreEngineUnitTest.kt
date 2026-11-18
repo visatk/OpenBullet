@@ -71,4 +71,39 @@ class CoreEngineUnitTest {
             NativeScannerBridge.fastHashLine("alice@example.com:secret123")
         )
     }
+
+    @Test
+    fun `loliScriptParser roundtrips multi-block Stacker script with Function JSON Regex and Retry`() {
+        val raw = """
+            FUNCTION BASE64ENCODE "<USER>:<PASS>" -> VAR "AUTH_TOKEN"
+            REQUEST POST "https://httpbin.org/post"
+            HEADER "Authorization: Basic <AUTH_TOKEN>"
+            CONTENT_TYPE "application/json"
+            CONTENT "{\"user\":\"<USER>\"}"
+            REDIRECT false
+            PARSE "<SOURCE>" JSON "json.user" -> CAP "Username"
+            PARSE "<SOURCE>" REGEX "origin\":\s*\"([^\"]+)\"" -> VAR "IP"
+            KEYCHECK
+              KEYCHAIN Success OR
+                KEY "HTTP/200"
+              KEYCHAIN Failure OR
+                KEY "Unauthorized"
+              KEYCHAIN Retry OR
+                KEY "HTTP/429"
+        """.trimIndent()
+
+        val blocks = LoliScriptParser.parseToBlocks(raw)
+        assertEquals(5, blocks.size)
+        val serialized = LoliScriptParser.serializeBlocks(blocks)
+        val reparsed = LoliScriptParser.parse(serialized)
+        assertEquals("POST", reparsed.method)
+        assertEquals("https://httpbin.org/post", reparsed.targetUrl)
+        assertEquals("Basic <AUTH_TOKEN>", reparsed.headers["Authorization"])
+        assertEquals(listOf("HTTP/429"), reparsed.retryKeys)
+        assertEquals(2, reparsed.parseRules.size)
+        assertEquals("Username", reparsed.parseRules[0].captureName)
+        assertTrue(reparsed.parseRules[0].isCapture)
+        assertEquals("IP", reparsed.parseRules[1].captureName)
+        assertFalse(reparsed.parseRules[1].isCapture)
+    }
 }

@@ -1,12 +1,19 @@
 package com.example
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -30,20 +37,26 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ActiveDialog
 import com.example.model.MainTab
+import com.example.model.ProxyStatus
 import com.example.ui.components.ObBottomNavigationBar
 import com.example.ui.components.ObNavigationRail
 import com.example.ui.components.ObWindowHeader
 import com.example.ui.dialogs.OpenBulletDialogHost
 import com.example.ui.screens.AboutScreen
+import com.example.ui.screens.ConfigEditorScreen
 import com.example.ui.screens.ConfigsScreen
 import com.example.ui.screens.HitsDbScreen
 import com.example.ui.screens.ProxiesScreen
@@ -73,8 +86,32 @@ class MainActivity : ComponentActivity() {
 fun OpenBulletApp(
     viewModel: OpenBulletViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var pendingNotificationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {
+        pendingNotificationAction?.invoke()
+        pendingNotificationAction = null
+    }
+
+    fun runWithNotificationPermission(action: () -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                pendingNotificationAction = action
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+        action()
+    }
 
     LaunchedEffect(state.statusBannerMessage) {
         val msg = state.statusBannerMessage
@@ -89,6 +126,7 @@ fun OpenBulletApp(
 
     BackHandler(
         enabled = state.activeDialog != ActiveDialog.None ||
+            state.configEditor != null ||
             state.tabHistory.isNotEmpty() ||
             state.activeTab != MainTab.RUNNER
     ) {
@@ -108,7 +146,7 @@ fun OpenBulletApp(
                 containerColor = ObColors.WorkspaceBackground,
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 bottomBar = {
-                    if (isCompact) {
+                    if (isCompact && state.configEditor == null) {
                         ObBottomNavigationBar(
                             activeTab = state.activeTab,
                             onSelectTab = viewModel::selectTab
@@ -157,98 +195,153 @@ fun OpenBulletApp(
                                 .weight(1f)
                                 .fillMaxHeight()
                         ) {
-                            AnimatedContent(
-                                targetState = state.activeTab,
-                                transitionSpec = {
-                                    fadeIn(animationSpec = tween(180)) togetherWith
-                                        fadeOut(animationSpec = tween(140))
-                                },
-                                label = "tab_transition"
-                            ) { tab ->
-                                when (tab) {
-                                    MainTab.RUNNER -> RunnerScreen(
-                                        state = state,
-                                        onStartLineChange = viewModel::updateStartLine,
-                                        onBotsChange = viewModel::updateBotsCount,
-                                        onEditStartClick = { viewModel.openDialog(ActiveDialog.EditStartLine) },
-                                        onEditBotsClick = { viewModel.openDialog(ActiveDialog.EditBotsCount) },
-                                        onProxyModeSelect = viewModel::selectProxyMode,
-                                        onStartStopClick = viewModel::toggleStartStop,
-                                        onResultTabSelect = viewModel::selectResultTab,
-                                        onOpenConfigDialog = { viewModel.openDialog(ActiveDialog.SelectConfig) },
-                                        onOpenWordlistDialog = { viewModel.openDialog(ActiveDialog.SelectWordlist) },
-                                        onClearConsole = viewModel::clearConsoleLogs,
-                                        onBackClick = { viewModel.navigateBack() },
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                            val activeEditor = state.configEditor
+                            if (activeEditor != null) {
+                                val usableProxies = state.proxies.count {
+                                    it.status == ProxyStatus.AVAILABLE || it.status == ProxyStatus.UNTESTED
+                                }
+                                ConfigEditorScreen(
+                                    editorState = activeEditor,
+                                    usableProxyCount = usableProxies,
+                                    onBack = viewModel::closeConfigEditor,
+                                    onMetadataChange = viewModel::updateEditorMetadata,
+                                    onApplyPreset = viewModel::applyTemplateToEditor,
+                                    onSelectSubTab = viewModel::selectEditorSubTab,
+                                    onAddBlock = viewModel::addBlockToEditor,
+                                    onUpdateBlock = viewModel::updateBlockInEditor,
+                                    onMoveBlock = viewModel::moveBlockInEditor,
+                                    onDeleteBlock = viewModel::deleteBlockFromEditor,
+                                    onRawScriptChange = viewModel::updateEditorRawScript,
+                                    onDebugInputChange = viewModel::updateEditorDebugInputs,
+                                    onRunDebug = viewModel::runConfigDebug,
+                                    onSave = viewModel::saveEditedConfig,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                AnimatedContent(
+                                    targetState = state.activeTab,
+                                    transitionSpec = {
+                                        fadeIn(animationSpec = tween(180)) togetherWith
+                                            fadeOut(animationSpec = tween(140))
+                                    },
+                                    label = "tab_transition"
+                                ) { tab ->
+                                    when (tab) {
+                                        MainTab.RUNNER -> RunnerScreen(
+                                            state = state,
+                                            onStartLineChange = viewModel::updateStartLine,
+                                            onBotsChange = viewModel::updateBotsCount,
+                                            onEditStartClick = { viewModel.openDialog(ActiveDialog.EditStartLine) },
+                                            onEditBotsClick = { viewModel.openDialog(ActiveDialog.EditBotsCount) },
+                                            onProxyModeSelect = viewModel::selectProxyMode,
+                                            onStartStopClick = {
+                                                if (state.isRunning) {
+                                                    viewModel.toggleStartStop()
+                                                } else {
+                                                    runWithNotificationPermission { viewModel.toggleStartStop() }
+                                                }
+                                            },
+                                            onResultTabSelect = viewModel::selectResultTab,
+                                            onOpenConfigDialog = { viewModel.openDialog(ActiveDialog.SelectConfig) },
+                                            onOpenWordlistDialog = { viewModel.openDialog(ActiveDialog.SelectWordlist) },
+                                            onClearConsole = viewModel::clearConsoleLogs,
+                                            onBackClick = { viewModel.navigateBack() },
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.PROXIES -> ProxiesScreen(
-                                        proxies = state.proxies,
-                                        activeFilter = state.proxyFilter,
-                                        isCheckingProxies = state.isCheckingProxies,
-                                        proxyCheckStatusText = state.proxyCheckStatusText,
-                                        onFilterChange = viewModel::setProxyFilter,
-                                        onAddClick = { viewModel.openDialog(ActiveDialog.AddProxies) },
-                                        onToggleCheckProxies = viewModel::toggleProxyCheckWork,
-                                        onDeleteProxy = viewModel::deleteProxy,
-                                        onClearAll = viewModel::clearProxies,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.PROXIES -> ProxiesScreen(
+                                            proxies = state.proxies,
+                                            activeFilter = state.proxyFilter,
+                                            isCheckingProxies = state.isCheckingProxies,
+                                            proxyCheckStatusText = state.proxyCheckStatusText,
+                                            onFilterChange = viewModel::setProxyFilter,
+                                            onAddClick = { viewModel.openDialog(ActiveDialog.AddProxies) },
+                                            onToggleCheckProxies = {
+                                                if (state.isCheckingProxies) {
+                                                    viewModel.toggleProxyCheckWork()
+                                                } else {
+                                                    runWithNotificationPermission { viewModel.toggleProxyCheckWork() }
+                                                }
+                                            },
+                                            onRemoveBad = viewModel::removeBadAndBannedProxies,
+                                            onExportProxies = {
+                                                val txt = viewModel.buildAliveProxiesExportText()
+                                                if (txt.isBlank()) {
+                                                    viewModel.showBannerMessage("No proxies to export")
+                                                } else {
+                                                    shareTextContent(context, "OpenBullet Proxies", txt)
+                                                }
+                                            },
+                                            onDeleteProxy = viewModel::deleteProxy,
+                                            onClearAll = viewModel::clearProxies,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.WORDLISTS -> WordlistsScreen(
-                                        wordlists = state.wordlists,
-                                        selectedWordlistId = state.selectedWordlist?.id,
-                                        onAddClick = { viewModel.openDialog(ActiveDialog.AddWordlist) },
-                                        onSelectForRunner = {
-                                            viewModel.selectWordlist(it)
-                                            viewModel.selectTab(MainTab.RUNNER)
-                                        },
-                                        onDeleteWordlist = viewModel::deleteWordlist,
-                                        onClearAll = viewModel::clearWordlists,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.WORDLISTS -> WordlistsScreen(
+                                            wordlists = state.wordlists,
+                                            selectedWordlistId = state.selectedWordlist?.id,
+                                            onAddClick = { viewModel.openDialog(ActiveDialog.AddWordlist) },
+                                            onSelectForRunner = {
+                                                viewModel.selectWordlist(it)
+                                                viewModel.selectTab(MainTab.RUNNER)
+                                            },
+                                            onDeleteWordlist = viewModel::deleteWordlist,
+                                            onClearAll = viewModel::clearWordlists,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.CONFIGS -> ConfigsScreen(
-                                        configs = state.configs,
-                                        selectedPreviewId = state.selectedConfigPreviewId,
-                                        activeRunnerConfigId = state.selectedConfig?.id,
-                                        onNewConfigClick = { viewModel.openDialog(ActiveDialog.AddConfig) },
-                                        onSelectPreview = viewModel::selectConfigForPreview,
-                                        onUseInRunner = {
-                                            viewModel.selectConfig(it)
-                                            viewModel.selectTab(MainTab.RUNNER)
-                                        },
-                                        onDeleteConfig = viewModel::deleteConfig,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.CONFIGS -> ConfigsScreen(
+                                            configs = state.configs,
+                                            selectedPreviewId = state.selectedConfigPreviewId,
+                                            activeRunnerConfigId = state.selectedConfig?.id,
+                                            onNewConfigClick = { viewModel.openConfigEditor(null) },
+                                            onEditConfig = { viewModel.openConfigEditor(it) },
+                                            onSelectPreview = viewModel::selectConfigForPreview,
+                                            onUseInRunner = {
+                                                viewModel.selectConfig(it)
+                                                viewModel.selectTab(MainTab.RUNNER)
+                                            },
+                                            onDeleteConfig = viewModel::deleteConfig,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.HITS_DB -> HitsDbScreen(
-                                        hits = state.hitsDb,
-                                        searchQuery = state.hitsSearchQuery,
-                                        typeFilter = state.hitsTypeFilter,
-                                        onSearchChange = viewModel::updateHitsSearchQuery,
-                                        onTypeFilterChange = viewModel::setHitsTypeFilter,
-                                        onDeleteHit = viewModel::deleteHitItem,
-                                        onClearAll = viewModel::clearHitsDb,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.HITS_DB -> HitsDbScreen(
+                                            hits = state.hitsDb,
+                                            searchQuery = state.hitsSearchQuery,
+                                            typeFilter = state.hitsTypeFilter,
+                                            onSearchChange = viewModel::updateHitsSearchQuery,
+                                            onTypeFilterChange = viewModel::setHitsTypeFilter,
+                                            onExportHits = {
+                                                val txt = viewModel.buildHitsExportText()
+                                                if (txt.isBlank()) {
+                                                    viewModel.showBannerMessage("No hits to export")
+                                                } else {
+                                                    shareTextContent(context, "OpenBullet Hits", txt)
+                                                }
+                                            },
+                                            onCopyHit = { hit -> viewModel.showBannerMessage("Copied ${hit.data}") },
+                                            onDeleteHit = viewModel::deleteHitItem,
+                                            onClearAll = viewModel::clearHitsDb,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.TOOLS -> ToolsScreen(
-                                        tools = state.tools,
-                                        viewModel = viewModel,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.TOOLS -> ToolsScreen(
+                                            tools = state.tools,
+                                            viewModel = viewModel,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.SETTINGS -> SettingsScreen(
-                                        settings = state.settings,
-                                        viewModel = viewModel,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.SETTINGS -> SettingsScreen(
+                                            settings = state.settings,
+                                            viewModel = viewModel,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
 
-                                    MainTab.ABOUT -> AboutScreen(
-                                        nativeEngineBanner = state.nativeEngineBanner,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                        MainTab.ABOUT -> AboutScreen(
+                                            nativeEngineBanner = state.nativeEngineBanner,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -267,7 +360,7 @@ fun OpenBulletApp(
                 onSelectWordlist = viewModel::selectWordlist,
                 onUpdateStartLine = viewModel::updateStartLine,
                 onUpdateBotsCount = viewModel::updateBotsCount,
-                onOpenNewConfigDialog = { viewModel.openDialog(ActiveDialog.AddConfig) },
+                onOpenNewConfigDialog = { viewModel.openConfigEditor(null) },
                 onOpenAddWordlistDialog = { viewModel.openDialog(ActiveDialog.AddWordlist) },
                 onCreateConfig = viewModel::addConfig,
                 onCreateWordlist = viewModel::addWordlist,
@@ -276,6 +369,15 @@ fun OpenBulletApp(
             )
         }
     }
+}
+
+private fun shareTextContent(context: Context, subject: String, content: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, content)
+    }
+    context.startActivity(Intent.createChooser(intent, subject))
 }
 
 @Preview(showBackground = true, widthDp = 960, heightDp = 640)

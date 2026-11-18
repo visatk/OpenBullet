@@ -56,6 +56,9 @@ interface ProxyDao {
     @Query("DELETE FROM proxies WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    @Query("DELETE FROM proxies WHERE status IN ('BAD', 'BANNED')")
+    suspend fun deleteBadAndBanned()
+
     @Query("DELETE FROM proxies")
     suspend fun clearAll()
 }
@@ -88,4 +91,16 @@ interface SettingsDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: SettingsEntity)
+}
+
+@Dao
+interface RunnerSessionDao {
+    @Query("SELECT * FROM runner_session WHERE id = 0 LIMIT 1")
+    fun observe(): Flow<RunnerSessionEntity?>
+
+    @Query("SELECT * FROM runner_session WHERE id = 0 LIMIT 1")
+    suspend fun getSnapshot(): RunnerSessionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: RunnerSessionEntity)
 }

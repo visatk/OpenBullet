@@ -18,7 +18,8 @@ data class HttpProbeResponse(
 data class LoliParseRule(
     val left: String,
     val right: String,
-    val captureName: String
+    val captureName: String,
+    val isCapture: Boolean = true
 )
 
 data class ParsedLoliScript(
@@ -29,7 +30,9 @@ data class ParsedLoliScript(
     val successKeys: List<String> = emptyList(),
     val customKeys: List<String> = emptyList(),
     val failureKeys: List<String> = emptyList(),
-    val parseRules: List<LoliParseRule> = emptyList()
+    val retryKeys: List<String> = emptyList(),
+    val parseRules: List<LoliParseRule> = emptyList(),
+    val blocks: List<com.example.model.ConfigBlock> = emptyList()
 )
 
 data class HttpCheckResult(

@@ -114,10 +114,14 @@ data class SettingsEntity(
     val showTimestampsInConsole: Boolean = false,
     val soundOnHit: Boolean = true,
     val soundOnFinish: Boolean = false,
+    val keepAwakeEnabled: Boolean = true,
+    val proxyJudgeUrl: String = "https://httpbin.org/ip",
     val accentHex: Long = 0xFF2F94E8L,
     val startLine: Int = 1,
     val botsCount: Int = 1,
-    val proxyMode: String = ProxyMode.DEF.name
+    val proxyMode: String = ProxyMode.DEF.name,
+    val selectedConfigId: String? = null,
+    val selectedWordlistId: String? = null
 ) {
     fun toSettingsState(current: SettingsState): SettingsState = current.copy(
         requestTimeoutSec = requestTimeoutSec,
@@ -127,6 +131,28 @@ data class SettingsEntity(
         showTimestampsInConsole = showTimestampsInConsole,
         soundOnHit = soundOnHit,
         soundOnFinish = soundOnFinish,
+        keepAwakeEnabled = keepAwakeEnabled,
+        proxyJudgeUrl = proxyJudgeUrl,
         accentHex = accentHex
     )
 }
+
+@Entity(tableName = "runner_session")
+data class RunnerSessionEntity(
+    @PrimaryKey val id: Int = 0,
+    val configId: String = "",
+    val wordlistId: String = "",
+    val isRunning: Boolean = false,
+    val progressCurrent: Int = 0,
+    val progressTotal: Int = 0,
+    val hits: Int = 0,
+    val custom: Int = 0,
+    val bad: Int = 0,
+    val retries: Int = 0,
+    val toCheck: Int = 0,
+    val cpm: Int = 0,
+    val elapsedSeconds: Long = 0L,
+    val workersPacked: String = "",
+    val resultsPacked: String = "",
+    val lastStatusLog: String = ""
+)

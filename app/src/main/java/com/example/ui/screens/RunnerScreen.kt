@@ -28,15 +28,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ListAlt
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.ListAlt
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.ViewList
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -696,7 +696,7 @@ private fun WorkerTablePanel(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.ViewList,
+                                imageVector = Icons.AutoMirrored.Outlined.ViewList,
                                 contentDescription = null,
                                 tint = ObColors.TextMuted,
                                 modifier = Modifier.size(26.dp)
@@ -959,7 +959,7 @@ private fun SelectorCardsRow(
                 stringResource(R.string.value_none)
             },
             isLoaded = selectedWordlistName != null,
-            icon = Icons.Outlined.ListAlt,
+            icon = Icons.AutoMirrored.Outlined.ListAlt,
             onClick = onOpenWordlistDialog,
             modifier = Modifier
                 .weight(1f)
@@ -1161,9 +1161,9 @@ private fun RunnerStatsPanel(
                 )
                 HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
                 StatLine("Total:", stats.proxiesTotal.toString(), ObColors.TextPrimary)
-                StatLine("Alive:", stats.proxiesAlive.toString(), ObColors.TextPrimary)
-                StatLine("Banned:", stats.proxiesBanned.toString(), ObColors.TextPrimary)
-                StatLine("Bad:", stats.proxiesBad.toString(), ObColors.TextPrimary)
+                StatLine("Alive:", stats.proxiesAlive.toString(), ObColors.StatusHitGreen, showDot = true)
+                StatLine("Banned:", stats.proxiesBanned.toString(), ObColors.StatusBannedPurple, showDot = true)
+                StatLine("Bad:", stats.proxiesBad.toString(), ObColors.StatusBadRed, showDot = true)
                 StatLine("CPM:", stats.cpm.toString(), MaterialTheme.colorScheme.primary, bold = true)
                 StatLine("Credit:", stats.credit, ObColors.TextPrimary, bold = true)
             }

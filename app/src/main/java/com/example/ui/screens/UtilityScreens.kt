@@ -136,10 +136,27 @@ fun ToolsScreen(
                             ObCheckRow("Trim", tools.cleanerTrimWhitespace, viewModel::toggleCleanerTrim)
                             ObCheckRow("Drop Empty", tools.cleanerRemoveEmpty, viewModel::toggleCleanerEmpty)
                         }
-                        ObBorderedButton(onClick = viewModel::runListCleaner, modifier = Modifier.testTag("tools_clean_button")) {
-                            Icon(Icons.Outlined.CleaningServices, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Clean Lines", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ObBorderedButton(onClick = viewModel::runListCleaner, modifier = Modifier.testTag("tools_clean_button")) {
+                                Icon(Icons.Outlined.CleaningServices, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Clean Lines", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                            }
+                            if (tools.cleanerOutput.isNotBlank()) {
+                                ObBorderedButton(
+                                    onClick = {
+                                        viewModel.addWordlist(
+                                            name = "cleaned_${System.currentTimeMillis() % 10000}.txt",
+                                            type = "Default",
+                                            purpose = "Tools Cleaner",
+                                            rawText = tools.cleanerOutput
+                                        )
+                                    },
+                                    isActive = true
+                                ) {
+                                    Text("Save as Wordlist", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
                         }
                         OutlinedTextField(
                             value = tools.cleanerOutput,
@@ -179,7 +196,10 @@ fun ToolsScreen(
                             shape = RoundedCornerShape(6.dp),
                             modifier = Modifier.width(160.dp)
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             ObBorderedButton(onClick = { viewModel.runComboFormatter(swapOrder = false) }) {
                                 Text("Format", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
                             }
@@ -187,6 +207,21 @@ fun ToolsScreen(
                                 Icon(Icons.Outlined.SwapHoriz, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Swap Sides", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                            }
+                            if (tools.formatterOutput.isNotBlank()) {
+                                ObBorderedButton(
+                                    onClick = {
+                                        viewModel.addWordlist(
+                                            name = "formatted_${System.currentTimeMillis() % 10000}.txt",
+                                            type = "Default",
+                                            purpose = "Combo Formatter",
+                                            rawText = tools.formatterOutput
+                                        )
+                                    },
+                                    isActive = true
+                                ) {
+                                    Text("Save as Wordlist", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         }
                         OutlinedTextField(
@@ -390,11 +425,40 @@ fun SettingsScreen(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when (settings.activeSection) {
                     SettingsSection.GENERAL -> {
-                        Text("General Settings", style = MaterialTheme.typography.titleSmall, color = ObColors.TextPrimary)
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        val isBatteryUnrestricted = com.example.viewmodel.RunnerPacketHelper.isIgnoringBatteryOptimizations(context)
+                        Text("General & Background Execution", style = MaterialTheme.typography.titleSmall, color = ObColors.TextPrimary)
+                        ObSwitchRow("Keep CPU & Wi-Fi awake (WakeLock during screen-off)", settings.keepAwakeEnabled, viewModel::toggleKeepAwake)
                         ObSwitchRow("Auto-save hits to Hits DB", settings.autoSaveHits, viewModel::toggleSettingAutoSave)
                         ObSwitchRow("Ignore empty wordlist lines", settings.ignoreEmptyLines, viewModel::toggleSettingIgnoreEmpty)
                         ObSwitchRow("Show timestamps in console log", settings.showTimestampsInConsole) {
                             viewModel.toggleTimestampLogging()
+                        }
+                        HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = if (isBatteryUnrestricted) "Battery Optimization: Unrestricted" else "Battery Optimization: Restricted",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isBatteryUnrestricted) ObColors.StatusHitGreen else ObColors.StatusCustomOrange
+                                )
+                                Text(
+                                    text = "Disable battery restriction in Android Settings so OEMs never pause background runs.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = ObColors.TextMuted
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            ObBorderedButton(
+                                onClick = { com.example.viewmodel.RunnerPacketHelper.openBatteryOptimizationSettings(context) },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Battery", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            }
                         }
                     }
 
@@ -420,6 +484,15 @@ fun SettingsScreen(
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
+                        OutlinedTextField(
+                            value = settings.proxyJudgeUrl,
+                            onValueChange = viewModel::updateProxyJudgeUrl,
+                            label = { Text("Proxy Checker Judge URL") },
+                            singleLine = true,
+                            colors = obFieldColors(),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
 
                     SettingsSection.SOUNDS -> {

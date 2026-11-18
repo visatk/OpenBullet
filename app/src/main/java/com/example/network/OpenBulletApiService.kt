@@ -7,6 +7,9 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
@@ -24,6 +27,25 @@ interface OpenBulletApiService {
 
     @GET
     suspend fun fetchRemoteText(@Url url: String): ResponseBody
+}
+
+class InMemoryCookieJar : CookieJar {
+    private val store = mutableMapOf<String, MutableList<Cookie>>()
+
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        val list = store.getOrPut(url.host) { mutableListOf() }
+        cookies.forEach { newCookie ->
+            list.removeAll { it.name == newCookie.name }
+            list.add(newCookie)
+        }
+    }
+
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        val now = System.currentTimeMillis()
+        val list = store[url.host] ?: return emptyList()
+        list.removeAll { it.expiresAt < now }
+        return list.toList()
+    }
 }
 
 object OpenBulletNetworkClient {
@@ -58,11 +80,22 @@ object OpenBulletNetworkClient {
             .create(OpenBulletApiService::class.java)
     }
 
-    fun buildClient(timeoutSec: Int, proxyItem: ProxyItem?): OkHttpClient {
+    fun buildClient(
+        timeoutSec: Int,
+        proxyItem: ProxyItem?,
+        followRedirects: Boolean = true,
+        cookieJar: CookieJar? = null
+    ): OkHttpClient {
         val builder = baseOkHttpClient.newBuilder()
             .connectTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
             .readTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
             .writeTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
+            .followRedirects(followRedirects)
+            .followSslRedirects(followRedirects)
+
+        if (cookieJar != null) {
+            builder.cookieJar(cookieJar)
+        }
 
         if (proxyItem != null) {
             val type = when (proxyItem.protocol) {

@@ -133,7 +133,7 @@ fun OpenBulletDialogHost(
                         Text("Clear", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
                     }
                     ObBorderedButton(onClick = onOpenNewConfigDialog) {
-                        Text("New Config", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("Open Config Maker", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     ObBorderedButton(onClick = onDismiss) {
                         Text("Close", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)

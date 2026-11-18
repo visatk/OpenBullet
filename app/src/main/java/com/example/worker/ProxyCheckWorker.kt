@@ -25,40 +25,74 @@ class ProxyCheckWorker(
         val proxyDao = db.proxyDao()
         val settings = db.settingsDao().getSnapshot()
         val timeoutSec = (settings?.requestTimeoutSec ?: 8).coerceIn(2, 15)
-        val probeUrl = inputData.getString(KEY_PROBE_URL) ?: "https://httpbin.org/ip"
+        val keepAwake = settings?.keepAwakeEnabled ?: true
+        val probeUrl = inputData.getString(KEY_PROBE_URL)
+            ?: settings?.proxyJudgeUrl?.takeIf { it.isNotBlank() }
+            ?: "https://httpbin.org/ip"
 
         val proxies = proxyDao.getAllSnapshot().map { it.toModel() }
         if (proxies.isEmpty()) {
             return@withContext Result.success(workDataOf(KEY_CHECKED to 0, KEY_TOTAL to 0))
         }
 
-        val checked = AtomicInteger(0)
-        val semaphore = Semaphore(8)
-
-        coroutineScope {
-            proxies.map { proxy ->
-                async {
-                    semaphore.withPermit {
-                        if (isStopped) return@withPermit
-                        val (status, pingMs, info) = HttpExecutionEngine.checkProxy(
-                            proxy = proxy,
-                            timeoutSec = timeoutSec,
-                            probeUrl = probeUrl
-                        )
-                        proxyDao.updateCheckResult(
-                            id = proxy.id,
-                            status = status.name,
-                            pingMs = pingMs,
-                            country = info
-                        )
-                        val done = checked.incrementAndGet()
-                        setProgress(workDataOf(KEY_CHECKED to done, KEY_TOTAL to proxies.size))
-                    }
-                }
-            }.awaitAll()
+        runCatching {
+            setForeground(
+                BackgroundKeepAliveHelper.buildForegroundInfo(
+                    context = applicationContext,
+                    workId = id,
+                    notificationId = BackgroundKeepAliveHelper.PROXY_CHECK_NOTIFICATION_ID,
+                    title = "OpenBullet • Proxy Checker",
+                    contentText = "Checking ${proxies.size} proxies...",
+                    progressCurrent = 0,
+                    progressTotal = proxies.size
+                )
+            )
         }
 
-        Result.success(workDataOf(KEY_CHECKED to checked.get(), KEY_TOTAL to proxies.size))
+        BackgroundKeepAliveHelper.withKeepAwakeLocks(applicationContext, enabled = keepAwake) {
+            val checked = AtomicInteger(0)
+            val semaphore = Semaphore(8)
+
+            coroutineScope {
+                proxies.map { proxy ->
+                    async {
+                        semaphore.withPermit {
+                            if (isStopped) return@withPermit
+                            val (status, pingMs, info) = HttpExecutionEngine.checkProxy(
+                                proxy = proxy,
+                                timeoutSec = timeoutSec,
+                                probeUrl = probeUrl
+                            )
+                            proxyDao.updateCheckResult(
+                                id = proxy.id,
+                                status = status.name,
+                                pingMs = pingMs,
+                                country = info
+                            )
+                            val done = checked.incrementAndGet()
+                            setProgress(workDataOf(KEY_CHECKED to done, KEY_TOTAL to proxies.size))
+                            if (done % 5 == 0 || done == proxies.size) {
+                                runCatching {
+                                    setForeground(
+                                        BackgroundKeepAliveHelper.buildForegroundInfo(
+                                            context = applicationContext,
+                                            workId = id,
+                                            notificationId = BackgroundKeepAliveHelper.PROXY_CHECK_NOTIFICATION_ID,
+                                            title = "OpenBullet • Proxy Checker",
+                                            contentText = "Checked $done / ${proxies.size} proxies",
+                                            progressCurrent = done,
+                                            progressTotal = proxies.size
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            Result.success(workDataOf(KEY_CHECKED to checked.get(), KEY_TOTAL to proxies.size))
+        }
     }
 
     companion object {

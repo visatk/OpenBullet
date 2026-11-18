@@ -11,9 +11,10 @@ import androidx.room.RoomDatabase
         WordlistEntity::class,
         ProxyEntity::class,
         HitDbEntity::class,
-        SettingsEntity::class
+        SettingsEntity::class,
+        RunnerSessionEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class OpenBulletDatabase : RoomDatabase() {
@@ -22,6 +23,7 @@ abstract class OpenBulletDatabase : RoomDatabase() {
     abstract fun proxyDao(): ProxyDao
     abstract fun hitDbDao(): HitDbDao
     abstract fun settingsDao(): SettingsDao
+    abstract fun runnerSessionDao(): RunnerSessionDao
 
     companion object {
         @Volatile
@@ -33,7 +35,10 @@ abstract class OpenBulletDatabase : RoomDatabase() {
                     context.applicationContext,
                     OpenBulletDatabase::class.java,
                     "openbullet_workstation.db"
-                ).build().also { instance = it }
+                )
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
+                    .also { instance = it }
             }
         }
     }

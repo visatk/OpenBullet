@@ -53,6 +53,8 @@ class OpenBulletRepository(context: Context) {
 
     val settingsFlow: Flow<SettingsEntity?> = db.settingsDao().observe()
 
+    val runnerSessionFlow: Flow<com.example.data.local.RunnerSessionEntity?> = db.runnerSessionDao().observe()
+
     suspend fun saveConfig(config: ConfigItem) {
         db.configDao().upsert(
             ConfigEntity(
@@ -106,6 +108,8 @@ class OpenBulletRepository(context: Context) {
 
     suspend fun deleteProxy(id: String) = db.proxyDao().deleteById(id)
 
+    suspend fun deleteBadAndBannedProxies() = db.proxyDao().deleteBadAndBanned()
+
     suspend fun clearProxies() = db.proxyDao().clearAll()
 
     suspend fun saveHit(hit: HitDbItem) {
@@ -157,16 +161,12 @@ class OpenBulletRepository(context: Context) {
         wordlistId: String,
         startLine: Int,
         botsCount: Int,
-        proxyMode: ProxyMode,
-        requiresNetwork: Boolean
+        proxyMode: ProxyMode
     ) {
-        val constraintsBuilder = Constraints.Builder()
-        if (requiresNetwork) {
-            constraintsBuilder.setRequiredNetworkType(NetworkType.CONNECTED)
-        }
+        // Do not attach NetworkType.CONNECTED constraint here so transient Wi-Fi/cellular switches
+        // while screen is off never cause WorkManager to kill and restart an active run.
         val request = OneTimeWorkRequestBuilder<RunnerJobWorker>()
             .addTag(RunnerJobWorker.WORK_TAG)
-            .setConstraints(constraintsBuilder.build())
             .setInputData(
                 workDataOf(
                     RunnerJobWorker.KEY_CONFIG_ID to configId,
@@ -195,11 +195,6 @@ class OpenBulletRepository(context: Context) {
     fun enqueueProxyCheck(probeUrl: String = "https://httpbin.org/ip") {
         val request = OneTimeWorkRequestBuilder<ProxyCheckWorker>()
             .addTag(ProxyCheckWorker.WORK_TAG)
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
             .setInputData(workDataOf(ProxyCheckWorker.KEY_PROBE_URL to probeUrl))
             .build()
 
