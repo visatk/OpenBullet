@@ -62,19 +62,32 @@ object OpenBulletNetworkClient {
         }
     }
 
+    private val highThroughputDispatcher: okhttp3.Dispatcher by lazy {
+        okhttp3.Dispatcher().apply {
+            maxRequests = 256
+            maxRequestsPerHost = 64
+        }
+    }
+
+    private val sharedConnectionPool: okhttp3.ConnectionPool by lazy {
+        okhttp3.ConnectionPool(64, 5, TimeUnit.MINUTES)
+    }
+
     val baseOkHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dispatcher(highThroughputDispatcher)
+            .connectionPool(sharedConnectionPool)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
-            .addInterceptor(loggingInterceptor)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
     val apiService: OpenBulletApiService by lazy {
         Retrofit.Builder()
             .baseUrl("https://httpbin.org/")
-            .client(baseOkHttpClient)
+            .client(baseOkHttpClient.newBuilder().addInterceptor(loggingInterceptor).build())
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(OpenBulletApiService::class.java)

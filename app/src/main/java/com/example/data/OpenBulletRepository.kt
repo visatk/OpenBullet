@@ -161,7 +161,13 @@ class OpenBulletRepository(context: Context) {
         wordlistId: String,
         startLine: Int,
         botsCount: Int,
-        proxyMode: ProxyMode
+        proxyMode: ProxyMode,
+        initialHits: Int = 0,
+        initialCustom: Int = 0,
+        initialBad: Int = 0,
+        initialRetries: Int = 0,
+        initialToCheck: Int = 0,
+        initialElapsedSec: Long = 0L
     ) {
         // Do not attach NetworkType.CONNECTED constraint here so transient Wi-Fi/cellular switches
         // while screen is off never cause WorkManager to kill and restart an active run.
@@ -173,7 +179,13 @@ class OpenBulletRepository(context: Context) {
                     RunnerJobWorker.KEY_WORDLIST_ID to wordlistId,
                     RunnerJobWorker.KEY_START_LINE to startLine,
                     RunnerJobWorker.KEY_BOTS_COUNT to botsCount,
-                    RunnerJobWorker.KEY_PROXY_MODE to proxyMode.name
+                    RunnerJobWorker.KEY_PROXY_MODE to proxyMode.name,
+                    RunnerJobWorker.KEY_INITIAL_HITS to initialHits,
+                    RunnerJobWorker.KEY_INITIAL_CUSTOM to initialCustom,
+                    RunnerJobWorker.KEY_INITIAL_BAD to initialBad,
+                    RunnerJobWorker.KEY_INITIAL_RETRIES to initialRetries,
+                    RunnerJobWorker.KEY_INITIAL_TO_CHECK to initialToCheck,
+                    RunnerJobWorker.KEY_INITIAL_ELAPSED_SEC to initialElapsedSec
                 )
             )
             .build()

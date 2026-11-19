@@ -172,7 +172,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                 when (info.state) {
                     WorkInfo.State.ENQUEUED,
                     WorkInfo.State.BLOCKED -> {
-                        _uiState.update { it.copy(isRunning = true) }
+                        _uiState.update { it.copy(isRunning = true, isPaused = false) }
                     }
                     WorkInfo.State.RUNNING -> {
                         val p = info.progress
@@ -185,6 +185,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                         val toCheck = p.getInt(RunnerJobWorker.KEY_TO_CHECK, _uiState.value.stats.dataToCheck)
                         val cpm = p.getInt(RunnerJobWorker.KEY_CPM, _uiState.value.stats.cpm)
                         val elapsed = p.getLong(RunnerJobWorker.KEY_ELAPSED_SEC, _uiState.value.elapsedSeconds)
+                        val eta = p.getLong(RunnerJobWorker.KEY_ETA_SEC, _uiState.value.etaSeconds)
                         val packedWorkers = p.getString(RunnerJobWorker.KEY_WORKERS_PACKED).orEmpty()
                         val packedResults = p.getString(RunnerJobWorker.KEY_RESULTS_PACKED).orEmpty()
                         val logLine = p.getString(RunnerJobWorker.KEY_LOG_LINE)
@@ -203,18 +204,22 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                             val nextWorkers = if (packedWorkers.isNotEmpty() && packedWorkers != lastWorkerPacket) {
                                 lastWorkerPacket = packedWorkers
                                 RunnerPacketHelper.unpackWorkers(packedWorkers)
+                            } else if (packedWorkers.isEmpty()) {
+                                emptyList()
                             } else state.workerRows
 
                             val nextResults = if (packedResults.isNotEmpty() && packedResults != lastResultPacket) {
                                 lastResultPacket = packedResults
-                                (state.resultRows + RunnerPacketHelper.unpackResults(packedResults)).takeLast(250)
+                                (state.resultRows + RunnerPacketHelper.unpackResults(packedResults)).takeLast(300)
                             } else state.resultRows
 
                             state.copy(
                                 isRunning = true,
+                                isPaused = false,
                                 progressCurrent = currentCount,
                                 progressTotal = totalCount,
                                 elapsedSeconds = elapsed,
+                                etaSeconds = eta,
                                 workerRows = nextWorkers,
                                 resultRows = nextResults,
                                 consoleLogs = nextLogs,
@@ -256,6 +261,9 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
 
                             state.copy(
                                 isRunning = false,
+                                isPaused = false,
+                                etaSeconds = 0L,
+                                workerRows = emptyList(),
                                 progressCurrent = if (wasRunning) currentCount else state.progressCurrent,
                                 progressTotal = if (wasRunning) totalCount else state.progressTotal,
                                 elapsedSeconds = if (wasRunning) elapsed else state.elapsedSeconds,
@@ -278,8 +286,17 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                     WorkInfo.State.FAILED -> {
                         _uiState.update { state ->
                             if (!state.isRunning) return@update state
-                            val reason = if (info.state == WorkInfo.State.CANCELLED) "Runner job stopped." else "Runner job failed."
-                            state.copy(isRunning = false, consoleLogs = appendLog(state, reason))
+                            val reason = when {
+                                state.isPaused -> "Runner paused at line ${state.startLine}."
+                                info.state == WorkInfo.State.CANCELLED -> "Runner job stopped."
+                                else -> "Runner job failed."
+                            }
+                            state.copy(
+                                isRunning = false,
+                                etaSeconds = 0L,
+                                workerRows = emptyList(),
+                                consoleLogs = appendLog(state, reason)
+                            )
                         }
                     }
                 }
@@ -344,8 +361,8 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun updateStartLine(value: Int) {
-        val clamped = value.coerceIn(1, 1000)
-        _uiState.update { it.copy(startLine = clamped) }
+        val clamped = value.coerceIn(1, 100000)
+        _uiState.update { it.copy(startLine = clamped, isPaused = false) }
         viewModelScope.launch { repository.saveSettings { it.copy(startLine = clamped) } }
     }
 
@@ -380,6 +397,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             val msg = if (config != null) "Loaded config: ${config.name}" else "Cleared selected config"
             current.copy(
                 selectedConfig = config,
+                isPaused = false,
                 activeDialog = ActiveDialog.None,
                 consoleLogs = appendLog(current, msg)
             )
@@ -394,8 +412,10 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
             val msg = if (wordlist != null) "Loaded wordlist: ${wordlist.name} ($total lines)" else "Cleared selected wordlist"
             current.copy(
                 selectedWordlist = wordlist,
+                isPaused = false,
                 progressCurrent = 0,
                 progressTotal = total,
+                etaSeconds = 0L,
                 stats = current.stats.copy(dataTotal = total),
                 activeDialog = ActiveDialog.None,
                 consoleLogs = appendLog(current, msg)
@@ -404,14 +424,70 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.saveSettings { it.copy(selectedWordlistId = wordlist?.id) } }
     }
 
-    fun toggleStartStop() {
+    fun pauseOrResumeRunner() {
         val current = _uiState.value
         if (current.isRunning) {
+            val nextCheckpoint = (current.progressCurrent + 1).coerceIn(1, current.progressTotal.coerceAtLeast(1))
             repository.cancelRunnerJob()
             _uiState.update {
                 it.copy(
                     isRunning = false,
-                    consoleLogs = appendLog(it, "Stopping Runner Foreground Service...")
+                    isPaused = true,
+                    startLine = nextCheckpoint,
+                    etaSeconds = 0L,
+                    workerRows = emptyList(),
+                    statusBannerMessage = "Paused at line #$nextCheckpoint",
+                    consoleLogs = appendLog(it, "Paused Runner at checkpoint line #$nextCheckpoint.")
+                )
+            }
+            viewModelScope.launch { repository.saveSettings { it.copy(startLine = nextCheckpoint) } }
+            return
+        }
+
+        if (current.isPaused) {
+            val cfg = current.selectedConfig ?: return
+            val list = current.selectedWordlist ?: return
+            val checkpointLine = current.startLine.coerceIn(1, list.lineCount.coerceAtLeast(1))
+            lastObservedWorkLog = null
+            lastWorkerPacket = null
+            lastResultPacket = null
+
+            _uiState.update {
+                it.copy(
+                    isRunning = true,
+                    isPaused = false,
+                    statusBannerMessage = "Resuming from line #$checkpointLine",
+                    consoleLogs = appendLog(it, "Resuming Runner from line #$checkpointLine/${list.lineCount}...")
+                )
+            }
+
+            repository.enqueueRunnerJob(
+                configId = cfg.id,
+                wordlistId = list.id,
+                startLine = checkpointLine,
+                botsCount = current.botsCount,
+                proxyMode = current.proxyMode,
+                initialHits = current.stats.dataHits,
+                initialCustom = current.stats.dataCustom,
+                initialBad = current.stats.dataBad,
+                initialRetries = current.stats.dataRetries,
+                initialToCheck = current.stats.dataToCheck,
+                initialElapsedSec = current.elapsedSeconds
+            )
+        }
+    }
+
+    fun toggleStartStop() {
+        val current = _uiState.value
+        if (current.isRunning || current.isPaused) {
+            repository.cancelRunnerJob()
+            _uiState.update {
+                it.copy(
+                    isRunning = false,
+                    isPaused = false,
+                    etaSeconds = 0L,
+                    workerRows = emptyList(),
+                    consoleLogs = appendLog(it, "Stopped Runner Foreground Service.")
                 )
             }
             return
@@ -451,7 +527,9 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update {
             it.copy(
                 isRunning = true,
+                isPaused = false,
                 elapsedSeconds = 0L,
+                etaSeconds = 0L,
                 progressCurrent = (current.startLine - 1).coerceIn(0, list.lineCount),
                 progressTotal = list.lineCount,
                 workerRows = emptyList(),
@@ -465,7 +543,7 @@ class OpenBulletViewModel(application: Application) : AndroidViewModel(applicati
                     dataToCheck = 0,
                     cpm = 0
                 ),
-                consoleLogs = appendLog(it, "Started Foreground Runner for '${cfg.name}' (keep-awake=${current.settings.keepAwakeEnabled})...")
+                consoleLogs = appendLog(it, "Started Continuous Runner Pool for '${cfg.name}' (${current.botsCount} bots)...")
             )
         }
 

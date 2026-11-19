@@ -266,6 +266,7 @@ sealed interface ActiveDialog {
     data object ImportConfig : ActiveDialog
     data object EditStartLine : ActiveDialog
     data object EditBotsCount : ActiveDialog
+    data class InspectResult(val row: ResultRow) : ActiveDialog
 }
 
 data class OpenBulletUiState(
@@ -277,9 +278,11 @@ data class OpenBulletUiState(
     val progressTotal: Int = 0,
     val proxyMode: ProxyMode = ProxyMode.DEF,
     val isRunning: Boolean = false,
+    val isPaused: Boolean = false,
     val isCheckingProxies: Boolean = false,
     val proxyCheckStatusText: String = "",
     val elapsedSeconds: Long = 0L,
+    val etaSeconds: Long = 0L,
     val selectedResultTab: ResultTab = ResultTab.HITS,
     val selectedConfig: ConfigItem? = null,
     val selectedWordlist: WordlistItem? = null,

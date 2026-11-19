@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
@@ -95,7 +96,9 @@ fun RunnerScreen(
     onEditBotsClick: () -> Unit,
     onProxyModeSelect: (ProxyMode) -> Unit,
     onStartStopClick: () -> Unit,
+    onPauseResumeClick: () -> Unit = {},
     onResultTabSelect: (ResultTab) -> Unit,
+    onInspectResultRow: (ResultRow) -> Unit = {},
     onOpenConfigDialog: () -> Unit,
     onOpenWordlistDialog: () -> Unit,
     onClearConsole: () -> Unit,
@@ -118,7 +121,9 @@ fun RunnerScreen(
                 onEditBotsClick = onEditBotsClick,
                 onProxyModeSelect = onProxyModeSelect,
                 onStartStopClick = onStartStopClick,
+                onPauseResumeClick = onPauseResumeClick,
                 onResultTabSelect = onResultTabSelect,
+                onInspectResultRow = onInspectResultRow,
                 onOpenConfigDialog = onOpenConfigDialog,
                 onOpenWordlistDialog = onOpenWordlistDialog,
                 onClearConsole = onClearConsole,
@@ -133,7 +138,9 @@ fun RunnerScreen(
                 onEditBotsClick = onEditBotsClick,
                 onProxyModeSelect = onProxyModeSelect,
                 onStartStopClick = onStartStopClick,
+                onPauseResumeClick = onPauseResumeClick,
                 onResultTabSelect = onResultTabSelect,
+                onInspectResultRow = onInspectResultRow,
                 onOpenConfigDialog = onOpenConfigDialog,
                 onOpenWordlistDialog = onOpenWordlistDialog,
                 onClearConsole = onClearConsole
@@ -151,7 +158,9 @@ private fun WideRunnerLayout(
     onEditBotsClick: () -> Unit,
     onProxyModeSelect: (ProxyMode) -> Unit,
     onStartStopClick: () -> Unit,
+    onPauseResumeClick: () -> Unit,
     onResultTabSelect: (ResultTab) -> Unit,
+    onInspectResultRow: (ResultRow) -> Unit,
     onOpenConfigDialog: () -> Unit,
     onOpenWordlistDialog: () -> Unit,
     onClearConsole: () -> Unit,
@@ -260,13 +269,24 @@ private fun WideRunnerLayout(
                     }
                 }
 
-                StartStopActionButton(
-                    isRunning = state.isRunning,
-                    onClick = onStartStopClick,
-                    modifier = Modifier
-                        .width(120.dp)
-                        .height(84.dp)
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (state.isRunning || state.isPaused) {
+                        PauseResumeActionButton(
+                            isPaused = state.isPaused,
+                            onClick = onPauseResumeClick,
+                            modifier = Modifier
+                                .width(106.dp)
+                                .height(84.dp)
+                        )
+                    }
+                    StartStopActionButton(
+                        isRunning = state.isRunning || state.isPaused,
+                        onClick = onStartStopClick,
+                        modifier = Modifier
+                            .width(114.dp)
+                            .height(84.dp)
+                    )
+                }
             }
         }
 
@@ -292,6 +312,7 @@ private fun WideRunnerLayout(
                 ResultTablePanel(
                     results = filteredResults,
                     selectedTab = state.selectedResultTab,
+                    onInspectRow = onInspectResultRow,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
@@ -299,6 +320,7 @@ private fun WideRunnerLayout(
                 ResultFilterAndTimerRow(
                     selectedTab = state.selectedResultTab,
                     elapsedSeconds = state.elapsedSeconds,
+                    etaSeconds = state.etaSeconds,
                     onSelectTab = onResultTabSelect
                 )
             }
@@ -348,7 +370,9 @@ private fun CompactRunnerLayout(
     onEditBotsClick: () -> Unit,
     onProxyModeSelect: (ProxyMode) -> Unit,
     onStartStopClick: () -> Unit,
+    onPauseResumeClick: () -> Unit,
     onResultTabSelect: (ResultTab) -> Unit,
+    onInspectResultRow: (ResultRow) -> Unit,
     onOpenConfigDialog: () -> Unit,
     onOpenWordlistDialog: () -> Unit,
     onClearConsole: () -> Unit
@@ -386,13 +410,27 @@ private fun CompactRunnerLayout(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = if (state.isRunning) "RUNNER ACTIVE" else "RUNNER STANDBY",
+                            text = when {
+                                state.isRunning -> "RUNNER ACTIVE (${state.stats.cpm} CPM)"
+                                state.isPaused -> "PAUSED AT LINE #${state.startLine}"
+                                else -> "RUNNER STANDBY"
+                            },
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                            color = if (state.isRunning) ObColors.StatusHitGreen else MaterialTheme.colorScheme.primary
+                            color = when {
+                                state.isRunning -> ObColors.StatusHitGreen
+                                state.isPaused -> ObColors.StatusCustomOrange
+                                else -> MaterialTheme.colorScheme.primary
+                            }
                         )
                         Text(
-                            text = formatElapsedTimer(state.elapsedSeconds),
-                            style = MaterialTheme.typography.titleMedium.copy(
+                            text = buildString {
+                                append(formatElapsedTimer(state.elapsedSeconds))
+                                if (state.isRunning && state.etaSeconds > 0L) {
+                                    append(" • ETA ")
+                                    append(formatShortEta(state.etaSeconds))
+                                }
+                            },
+                            style = MaterialTheme.typography.titleSmall.copy(
                                 fontFamily = JetBrainsMonoFontFamily,
                                 fontFeatureSettings = "tnum"
                             ),
@@ -400,13 +438,24 @@ private fun CompactRunnerLayout(
                         )
                     }
 
-                    StartStopActionButton(
-                        isRunning = state.isRunning,
-                        onClick = onStartStopClick,
-                        modifier = Modifier
-                            .width(124.dp)
-                            .height(50.dp)
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (state.isRunning || state.isPaused) {
+                            PauseResumeActionButton(
+                                isPaused = state.isPaused,
+                                onClick = onPauseResumeClick,
+                                modifier = Modifier
+                                    .width(102.dp)
+                                    .height(48.dp)
+                            )
+                        }
+                        StartStopActionButton(
+                            isRunning = state.isRunning || state.isPaused,
+                            onClick = onStartStopClick,
+                            modifier = Modifier
+                                .width(108.dp)
+                                .height(48.dp)
+                        )
+                    }
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -544,6 +593,7 @@ private fun CompactRunnerLayout(
                     ResultTablePanel(
                         results = filteredResults,
                         selectedTab = state.selectedResultTab,
+                        onInspectRow = onInspectResultRow,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(176.dp)
@@ -611,6 +661,42 @@ private fun ParameterStepperRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag(sliderTestTag)
+        )
+    }
+}
+
+@Composable
+private fun PauseResumeActionButton(
+    isPaused: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    val accent = if (isPaused) ObColors.StatusHitGreen else ObColors.StatusCustomOrange
+    ObBorderedButton(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        containerColor = accent.copy(alpha = 0.14f),
+        borderColor = accent,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+        modifier = modifier.testTag("runner_pause_resume_button")
+    ) {
+        Icon(
+            imageVector = if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+            contentDescription = null,
+            tint = accent,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = if (isPaused) "RESUME" else "PAUSE",
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp
+            ),
+            color = accent
         )
     }
 }
@@ -723,7 +809,7 @@ private fun WorkerTablePanel(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = row.id.toString(),
+                                    text = "#${row.id}",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                                     color = ObColors.TextSecondary,
                                     modifier = Modifier.weight(0.14f)
@@ -767,6 +853,7 @@ private fun WorkerTablePanel(
 private fun ResultTablePanel(
     results: List<ResultRow>,
     selectedTab: ResultTab,
+    onInspectRow: (ResultRow) -> Unit,
     modifier: Modifier = Modifier
 ) {
     ObPanel(modifier = modifier.testTag("result_table_panel")) {
@@ -804,6 +891,7 @@ private fun ResultTablePanel(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clickable { onInspectRow(row) }
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -870,6 +958,7 @@ private fun TableHeaderCell(
 private fun ResultFilterAndTimerRow(
     selectedTab: ResultTab,
     elapsedSeconds: Long,
+    etaSeconds: Long,
     onSelectTab: (ResultTab) -> Unit
 ) {
     Row(
@@ -879,7 +968,13 @@ private fun ResultFilterAndTimerRow(
     ) {
         ResultFilterTabsOnly(selectedTab = selectedTab, onSelectTab = onSelectTab)
         Text(
-            text = formatElapsedTimer(elapsedSeconds),
+            text = buildString {
+                append(formatElapsedTimer(elapsedSeconds))
+                if (etaSeconds > 0L) {
+                    append(" • ETA ")
+                    append(formatShortEta(etaSeconds))
+                }
+            },
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontFamily = JetBrainsMonoFontFamily,
                 fontFeatureSettings = "tnum"
@@ -1221,4 +1316,15 @@ private fun formatElapsedTimer(totalSeconds: Long): String {
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
     return String.format(Locale.US, "%d days %02d : %02d : %02d", days, hours, minutes, seconds)
+}
+
+private fun formatShortEta(totalSeconds: Long): String {
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
+    }
 }

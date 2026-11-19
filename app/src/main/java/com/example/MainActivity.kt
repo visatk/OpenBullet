@@ -245,13 +245,23 @@ fun OpenBulletApp(
                                             onEditBotsClick = { viewModel.openDialog(ActiveDialog.EditBotsCount) },
                                             onProxyModeSelect = viewModel::selectProxyMode,
                                             onStartStopClick = {
-                                                if (state.isRunning) {
+                                                if (state.isRunning || state.isPaused) {
                                                     viewModel.toggleStartStop()
                                                 } else {
                                                     runWithNotificationPermission { viewModel.toggleStartStop() }
                                                 }
                                             },
+                                            onPauseResumeClick = {
+                                                if (state.isRunning) {
+                                                    viewModel.pauseOrResumeRunner()
+                                                } else {
+                                                    runWithNotificationPermission { viewModel.pauseOrResumeRunner() }
+                                                }
+                                            },
                                             onResultTabSelect = viewModel::selectResultTab,
+                                            onInspectResultRow = { row ->
+                                                viewModel.openDialog(ActiveDialog.InspectResult(row))
+                                            },
                                             onOpenConfigDialog = { viewModel.openDialog(ActiveDialog.SelectConfig) },
                                             onOpenWordlistDialog = { viewModel.openDialog(ActiveDialog.SelectWordlist) },
                                             onClearConsole = viewModel::clearConsoleLogs,

@@ -98,6 +98,85 @@ fun OpenBulletDialogHost(
             )
         }
 
+        is ActiveDialog.InspectResult -> {
+            val context = LocalContext.current
+            val row = activeDialog.row
+            val accentColor = when (row.category) {
+                com.example.model.ResultTab.HITS -> ObColors.StatusHitGreen
+                com.example.model.ResultTab.CUSTOM -> ObColors.StatusCustomOrange
+                com.example.model.ResultTab.TO_CHECK -> ObColors.StatusToCheckAqua
+            }
+            ObDialogFrame(title = "Result Inspector (${row.category.label})", onDismiss = onDismiss) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Time: ${row.time}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = ObColors.TextSecondary
+                        )
+                        Text(
+                            text = "Proxy: ${row.proxy}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    OutlinedTextField(
+                        value = row.data,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Combo / Input Data") },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        colors = dialogFieldColors(),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = row.capturedData,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Captured Data (CAP)") },
+                        minLines = 3,
+                        maxLines = 6,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = JetBrainsMonoFontFamily,
+                            color = accentColor
+                        ),
+                        colors = dialogFieldColors(),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                ) {
+                    ObBorderedButton(
+                        onClick = {
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            cm?.setPrimaryClip(
+                                android.content.ClipData.newPlainText(
+                                    "OpenBullet Result",
+                                    "${row.data} | ${row.capturedData}"
+                                )
+                            )
+                            onDismiss()
+                        },
+                        isActive = true
+                    ) {
+                        Text("Copy Combo & Captures", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Close", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                    }
+                }
+            }
+        }
+
         ActiveDialog.SelectConfig -> {
             ObDialogFrame(title = "Select Config (CFG)", onDismiss = onDismiss) {
                 if (configs.isEmpty()) {
