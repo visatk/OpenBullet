@@ -1,12 +1,13 @@
 package com.example.network
 
 import com.example.model.ConfigItem
+import com.squareup.moshi.JsonAdapter
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
-import org.json.JSONArray
-import org.json.JSONObject
 
 enum class ConfigExportFormat(val extension: String, val label: String) {
     LOLI("loli", ".loli"),
@@ -14,6 +15,31 @@ enum class ConfigExportFormat(val extension: String, val label: String) {
 }
 
 object ConfigFileCodec {
+
+    private val moshi: Moshi by lazy { Moshi.Builder().build() }
+
+    private val mapType = Types.newParameterizedType(
+        Map::class.java,
+        String::class.java,
+        Any::class.java
+    )
+
+    private val listOfMapsType = Types.newParameterizedType(
+        List::class.java,
+        mapType
+    )
+
+    private val prettyMapAdapter: JsonAdapter<Map<String, Any?>> by lazy {
+        moshi.adapter<Map<String, Any?>>(mapType).indent("  ")
+    }
+
+    private val prettyListAdapter: JsonAdapter<List<Map<String, Any?>>> by lazy {
+        moshi.adapter<List<Map<String, Any?>>>(listOfMapsType).indent("  ")
+    }
+
+    private val lenientAnyAdapter: JsonAdapter<Any> by lazy {
+        moshi.adapter(Any::class.java).lenient()
+    }
 
     fun detectFormatLabel(rawText: String): String {
         val trimmed = rawText.trim()
@@ -28,18 +54,18 @@ object ConfigFileCodec {
     }
 
     fun serializeToLoli(config: ConfigItem): String {
-        val settingsJson = JSONObject().apply {
-            put("Name", config.name)
-            put("Author", config.author)
-            put("Category", config.category)
-            put("AllowedWordlist1", config.wordlistType)
-            put("NeedsProxies", config.needsProxies)
-            put("LastModified", config.lastModified)
-            put("Version", "1.0.0")
-        }
+        val settingsMap = linkedMapOf<String, Any?>(
+            "Name" to config.name,
+            "Author" to config.author,
+            "Category" to config.category,
+            "AllowedWordlist1" to config.wordlistType,
+            "NeedsProxies" to config.needsProxies,
+            "LastModified" to config.lastModified,
+            "Version" to "1.0.0"
+        )
         return buildString {
             appendLine("[SETTINGS]")
-            appendLine(settingsJson.toString(2))
+            appendLine(prettyMapAdapter.toJson(settingsMap))
             appendLine()
             appendLine("[SCRIPT]")
             append(config.scriptPreview.trim())
@@ -47,28 +73,24 @@ object ConfigFileCodec {
     }
 
     fun serializeToJson(config: ConfigItem): String {
-        return configToJsonObject(config).toString(2)
+        return prettyMapAdapter.toJson(configToMap(config))
     }
 
     fun serializeListToJson(configs: List<ConfigItem>): String {
-        val array = JSONArray()
-        configs.forEach { cfg ->
-            array.put(configToJsonObject(cfg))
-        }
-        return array.toString(2)
+        return prettyListAdapter.toJson(configs.map { configToMap(it) })
     }
 
-    private fun configToJsonObject(config: ConfigItem): JSONObject {
-        return JSONObject().apply {
-            put("id", config.id)
-            put("name", config.name)
-            put("author", config.author)
-            put("category", config.category)
-            put("wordlistType", config.wordlistType)
-            put("needsProxies", config.needsProxies)
-            put("lastModified", config.lastModified)
-            put("script", config.scriptPreview)
-        }
+    private fun configToMap(config: ConfigItem): Map<String, Any?> {
+        return linkedMapOf(
+            "id" to config.id,
+            "name" to config.name,
+            "author" to config.author,
+            "category" to config.category,
+            "wordlistType" to config.wordlistType,
+            "needsProxies" to config.needsProxies,
+            "lastModified" to config.lastModified,
+            "script" to config.scriptPreview
+        )
     }
 
     fun parseImportPayload(
@@ -88,12 +110,10 @@ object ConfigFileCodec {
         // 2. Check for JSON Array of configs
         if (trimmed.startsWith("[")) {
             val parsedList = runCatching {
-                val arr = JSONArray(trimmed)
-                buildList {
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.optJSONObject(i) ?: continue
-                        add(parseJsonObject(obj, "$fallbackName #${i + 1}"))
-                    }
+                val arr = lenientAnyAdapter.fromJson(trimmed) as? List<*> ?: return@runCatching null
+                arr.mapIndexedNotNull { index, item ->
+                    val obj = item as? Map<*, *> ?: return@mapIndexedNotNull null
+                    parseJsonMap(obj, "$fallbackName #${index + 1}")
                 }
             }.getOrNull()
             if (!parsedList.isNullOrEmpty()) return parsedList
@@ -102,19 +122,14 @@ object ConfigFileCodec {
         // 3. Check for single JSON Object (either our JSON format or raw [SETTINGS] JSON)
         if (trimmed.startsWith("{")) {
             val single = runCatching {
-                val obj = JSONObject(trimmed)
-                parseJsonObject(obj, fallbackName)
+                val obj = lenientAnyAdapter.fromJson(trimmed) as? Map<*, *> ?: return@runCatching null
+                parseJsonMap(obj, fallbackName)
             }.getOrNull()
             if (single != null) return listOf(single)
         }
 
         // 4. Fallback: treat as raw LoliScript code
-        val cleanName = fallbackName
-            .removeSuffix(".loli")
-            .removeSuffix(".json")
-            .removeSuffix(".txt")
-            .trim()
-            .ifEmpty { "Imported Config" }
+        val cleanName = stripConfigExtension(fallbackName, "Imported Config")
 
         return listOf(
             ConfigItem(
@@ -143,44 +158,29 @@ object ConfigFileCodec {
         }
 
         val scriptRaw = when {
-            scriptIdx >= 0 -> text.substring(scriptIdx + "[SCRIPT]".length).trim()
+            scriptIdx >= 0 && settingsIdx > scriptIdx ->
+                text.substring(scriptIdx + "[SCRIPT]".length, settingsIdx).trim()
+            scriptIdx >= 0 ->
+                text.substring(scriptIdx + "[SCRIPT]".length).trim()
             else -> ""
         }
 
-        val settingsObj = runCatching {
+        val settingsMap = runCatching {
             val braceStart = settingsRaw.indexOf('{')
             val braceEnd = settingsRaw.lastIndexOf('}')
             if (braceStart >= 0 && braceEnd > braceStart) {
-                JSONObject(settingsRaw.substring(braceStart, braceEnd + 1))
+                lenientAnyAdapter.fromJson(settingsRaw.substring(braceStart, braceEnd + 1)) as? Map<*, *>
             } else null
         }.getOrNull()
 
-        val cleanFallback = fallbackName
-            .removeSuffix(".loli")
-            .removeSuffix(".json")
-            .trim()
-            .ifEmpty { "Imported .loli Config" }
+        val cleanFallback = stripConfigExtension(fallbackName, "Imported .loli Config")
 
-        val name = settingsObj?.optString("Name")?.takeIf { it.isNotBlank() }
-            ?: settingsObj?.optString("name")?.takeIf { it.isNotBlank() }
-            ?: cleanFallback
-        val author = settingsObj?.optString("Author")?.takeIf { it.isNotBlank() }
-            ?: settingsObj?.optString("author")?.takeIf { it.isNotBlank() }
-            ?: "LocalUser"
-        val category = settingsObj?.optString("Category")?.takeIf { it.isNotBlank() }
-            ?: settingsObj?.optString("category")?.takeIf { it.isNotBlank() }
-            ?: "Default"
-        val wordlistType = settingsObj?.optString("AllowedWordlist1")?.takeIf { it.isNotBlank() }
-            ?: settingsObj?.optString("wordlistType")?.takeIf { it.isNotBlank() }
-            ?: "Mail:Pass"
-        val needsProxies = when {
-            settingsObj == null -> true
-            settingsObj.has("NeedsProxies") -> settingsObj.optBoolean("NeedsProxies", true)
-            settingsObj.has("needsProxies") -> settingsObj.optBoolean("needsProxies", true)
-            else -> true
-        }
-        val lastModified = settingsObj?.optString("LastModified")?.takeIf { it.isNotBlank() }
-            ?: todayString()
+        val name = settingsMap?.optNonBlankString("Name", "name") ?: cleanFallback
+        val author = settingsMap?.optNonBlankString("Author", "author") ?: "LocalUser"
+        val category = settingsMap?.optNonBlankString("Category", "category") ?: "Default"
+        val wordlistType = settingsMap?.optNonBlankString("AllowedWordlist1", "wordlistType") ?: "Mail:Pass"
+        val needsProxies = settingsMap?.optBoolean("NeedsProxies", "needsProxies", default = true) ?: true
+        val lastModified = settingsMap?.optNonBlankString("LastModified", "lastModified") ?: todayString()
 
         return ConfigItem(
             id = UUID.randomUUID().toString(),
@@ -194,36 +194,16 @@ object ConfigFileCodec {
         )
     }
 
-    private fun parseJsonObject(obj: JSONObject, fallbackName: String): ConfigItem {
-        val cleanFallback = fallbackName
-            .removeSuffix(".loli")
-            .removeSuffix(".json")
-            .trim()
-            .ifEmpty { "Imported JSON Config" }
+    private fun parseJsonMap(obj: Map<*, *>, fallbackName: String): ConfigItem {
+        val cleanFallback = stripConfigExtension(fallbackName, "Imported JSON Config")
 
-        val name = obj.optString("name").takeIf { it.isNotBlank() }
-            ?: obj.optString("Name").takeIf { it.isNotBlank() }
-            ?: cleanFallback
-        val author = obj.optString("author").takeIf { it.isNotBlank() }
-            ?: obj.optString("Author").takeIf { it.isNotBlank() }
-            ?: "LocalUser"
-        val category = obj.optString("category").takeIf { it.isNotBlank() }
-            ?: obj.optString("Category").takeIf { it.isNotBlank() }
-            ?: "Default"
-        val wordlistType = obj.optString("wordlistType").takeIf { it.isNotBlank() }
-            ?: obj.optString("AllowedWordlist1").takeIf { it.isNotBlank() }
-            ?: "Mail:Pass"
-        val needsProxies = when {
-            obj.has("needsProxies") -> obj.optBoolean("needsProxies", true)
-            obj.has("NeedsProxies") -> obj.optBoolean("NeedsProxies", true)
-            else -> true
-        }
-        val lastModified = obj.optString("lastModified").takeIf { it.isNotBlank() }
-            ?: obj.optString("LastModified").takeIf { it.isNotBlank() }
-            ?: todayString()
-        val script = obj.optString("script").takeIf { it.isNotBlank() }
-            ?: obj.optString("scriptPreview").takeIf { it.isNotBlank() }
-            ?: obj.optString("Script").takeIf { it.isNotBlank() }
+        val name = obj.optNonBlankString("name", "Name") ?: cleanFallback
+        val author = obj.optNonBlankString("author", "Author") ?: "LocalUser"
+        val category = obj.optNonBlankString("category", "Category") ?: "Default"
+        val wordlistType = obj.optNonBlankString("wordlistType", "AllowedWordlist1") ?: "Mail:Pass"
+        val needsProxies = obj.optBoolean("needsProxies", "NeedsProxies", default = true)
+        val lastModified = obj.optNonBlankString("lastModified", "LastModified") ?: todayString()
+        val script = obj.optNonBlankString("script", "scriptPreview", "Script")
             ?: ConfigTemplates.presets.first().script
 
         return ConfigItem(
@@ -236,6 +216,35 @@ object ConfigFileCodec {
             lastModified = lastModified,
             scriptPreview = script
         )
+    }
+
+    private fun Map<*, *>.optNonBlankString(vararg keys: String): String? {
+        for (key in keys) {
+            val value = this[key] ?: continue
+            val text = value.toString().trim()
+            if (text.isNotEmpty()) return text
+        }
+        return null
+    }
+
+    private fun Map<*, *>.optBoolean(vararg keys: String, default: Boolean): Boolean {
+        for (key in keys) {
+            if (!this.containsKey(key)) continue
+            return when (val value = this[key]) {
+                is Boolean -> value
+                is String -> value.equals("true", ignoreCase = true)
+                is Number -> value.toInt() != 0
+                else -> default
+            }
+        }
+        return default
+    }
+
+    private fun stripConfigExtension(rawName: String, defaultName: String): String {
+        val stripped = rawName.trim()
+            .replace(Regex("""\.(loli|json|txt)$""", RegexOption.IGNORE_CASE), "")
+            .trim()
+        return stripped.ifEmpty { defaultName }
     }
 
     private fun todayString(): String =

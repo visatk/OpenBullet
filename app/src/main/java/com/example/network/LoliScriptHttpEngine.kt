@@ -1,6 +1,5 @@
 package com.example.network
 
-import android.util.Base64
 import com.example.model.ConfigBlock
 import com.example.model.ConfigDebugResult
 import com.example.model.ParseMode
@@ -9,6 +8,8 @@ import com.example.model.ProxyStatus
 import com.example.model.ScriptFunctionType
 import com.example.nativeengine.KeyScanOutcome
 import com.example.nativeengine.NativeScannerBridge
+import com.squareup.moshi.JsonAdapter
+import com.squareup.moshi.Moshi
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -16,8 +17,8 @@ import java.util.UUID
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
+import okio.ByteString.Companion.decodeBase64
+import okio.ByteString.Companion.encodeUtf8
 
 object ConfigTemplates {
     data class TemplatePreset(
@@ -118,8 +119,29 @@ object LoliScriptParser {
         RegexOption.IGNORE_CASE
     )
 
-    private fun unescape(raw: String): String =
-        raw.replace("\\\"", "\"").replace("\\\\", "\\")
+    private fun unescape(raw: String): String {
+        val out = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch == '\\' && i + 1 < raw.length) {
+                when (val next = raw[i + 1]) {
+                    '\\', '"' -> {
+                        out.append(next)
+                        i += 2
+                    }
+                    else -> {
+                        out.append(ch)
+                        i++
+                    }
+                }
+            } else {
+                out.append(ch)
+                i++
+            }
+        }
+        return out.toString()
+    }
 
     private fun escape(raw: String): String =
         raw.replace("\\", "\\\\").replace("\"", "\\\"")
@@ -378,27 +400,31 @@ object LoliScriptParser {
 
                     is ConfigBlock.KeyCheckBlock -> {
                         appendLine("KEYCHECK")
-                        if (block.successKeys.isNotEmpty()) {
+                        val validSuccess = block.successKeys.filter { it.isNotBlank() }
+                        if (validSuccess.isNotEmpty()) {
                             appendLine("  KEYCHAIN Success OR")
-                            block.successKeys.filter { it.isNotBlank() }.forEach { k ->
+                            validSuccess.forEach { k ->
                                 appendLine("    KEY \"${escape(k)}\"")
                             }
                         }
-                        if (block.customKeys.isNotEmpty()) {
+                        val validCustom = block.customKeys.filter { it.isNotBlank() }
+                        if (validCustom.isNotEmpty()) {
                             appendLine("  KEYCHAIN Custom OR")
-                            block.customKeys.filter { it.isNotBlank() }.forEach { k ->
+                            validCustom.forEach { k ->
                                 appendLine("    KEY \"${escape(k)}\"")
                             }
                         }
-                        if (block.failureKeys.isNotEmpty()) {
+                        val validFailure = block.failureKeys.filter { it.isNotBlank() }
+                        if (validFailure.isNotEmpty()) {
                             appendLine("  KEYCHAIN Failure OR")
-                            block.failureKeys.filter { it.isNotBlank() }.forEach { k ->
+                            validFailure.forEach { k ->
                                 appendLine("    KEY \"${escape(k)}\"")
                             }
                         }
-                        if (block.retryKeys.isNotEmpty()) {
+                        val validRetry = block.retryKeys.filter { it.isNotBlank() }
+                        if (validRetry.isNotEmpty()) {
                             appendLine("  KEYCHAIN Retry OR")
-                            block.retryKeys.filter { it.isNotBlank() }.forEach { k ->
+                            validRetry.forEach { k ->
                                 appendLine("    KEY \"${escape(k)}\"")
                             }
                         }
@@ -410,6 +436,10 @@ object LoliScriptParser {
 }
 
 object HttpExecutionEngine {
+
+    private val lenientJsonAdapter: JsonAdapter<Any> by lazy {
+        Moshi.Builder().build().adapter(Any::class.java).lenient()
+    }
 
     fun executeCheck(
         rawLine: String,
