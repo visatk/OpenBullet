@@ -1,18 +1,25 @@
 package com.example.data.local
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.model.AppThemeMode
 import com.example.model.ConfigItem
 import com.example.model.HitDbItem
+import com.example.model.PersistedSettingsSnapshot
 import com.example.model.ProxyItem
 import com.example.model.ProxyMode
 import com.example.model.ProxyProtocol
 import com.example.model.ProxyStatus
 import com.example.model.ResultTab
+import com.example.model.RunnerSessionSnapshot
 import com.example.model.SettingsState
 import com.example.model.WordlistItem
 
-@Entity(tableName = "configs")
+@Entity(
+    tableName = "configs",
+    indices = [Index(value = ["createdAt"])]
+)
 data class ConfigEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -48,19 +55,27 @@ data class WordlistEntity(
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun toModel(): WordlistItem {
-        val parsedLines = if (linesRaw.isEmpty()) emptyList() else linesRaw.split("\n")
+        val previewLines = if (linesRaw.isEmpty()) emptyList() else linesRaw.split("\n")
         return WordlistItem(
             id = id,
             name = name,
             path = path,
             type = type,
-            lines = parsedLines,
-            purpose = purpose
+            lines = previewLines,
+            purpose = purpose,
+            storedLineCount = lineCount
         )
     }
 }
 
-@Entity(tableName = "proxies")
+@Entity(
+    tableName = "proxies",
+    indices = [
+        Index(value = ["status"]),
+        Index(value = ["protocol"]),
+        Index(value = ["createdAt"])
+    ]
+)
 data class ProxyEntity(
     @PrimaryKey val id: String,
     val host: String,
@@ -82,7 +97,13 @@ data class ProxyEntity(
     )
 }
 
-@Entity(tableName = "hits_db")
+@Entity(
+    tableName = "hits_db",
+    indices = [
+        Index(value = ["type"]),
+        Index(value = ["createdAt"])
+    ]
+)
 data class HitDbEntity(
     @PrimaryKey val id: String,
     val date: String,
@@ -121,9 +142,11 @@ data class SettingsEntity(
     val botsCount: Int = 1,
     val proxyMode: String = ProxyMode.DEF.name,
     val selectedConfigId: String? = null,
-    val selectedWordlistId: String? = null
+    val selectedWordlistId: String? = null,
+    val themeMode: String = AppThemeMode.DARK.name,
+    val useDynamicColor: Boolean = false
 ) {
-    fun toSettingsState(current: SettingsState): SettingsState = current.copy(
+    fun toSettingsState(current: SettingsState = SettingsState()): SettingsState = current.copy(
         requestTimeoutSec = requestTimeoutSec,
         maxRetries = maxRetries,
         autoSaveHits = autoSaveHits,
@@ -133,8 +156,53 @@ data class SettingsEntity(
         soundOnFinish = soundOnFinish,
         keepAwakeEnabled = keepAwakeEnabled,
         proxyJudgeUrl = proxyJudgeUrl,
-        accentHex = accentHex
+        accentHex = accentHex,
+        themeMode = runCatching { AppThemeMode.valueOf(themeMode) }.getOrDefault(AppThemeMode.DARK),
+        useDynamicColor = useDynamicColor
     )
+
+    fun toSnapshot(): PersistedSettingsSnapshot = PersistedSettingsSnapshot(
+        requestTimeoutSec = requestTimeoutSec,
+        maxRetries = maxRetries,
+        autoSaveHits = autoSaveHits,
+        ignoreEmptyLines = ignoreEmptyLines,
+        showTimestampsInConsole = showTimestampsInConsole,
+        soundOnHit = soundOnHit,
+        soundOnFinish = soundOnFinish,
+        keepAwakeEnabled = keepAwakeEnabled,
+        proxyJudgeUrl = proxyJudgeUrl,
+        accentHex = accentHex,
+        themeMode = runCatching { AppThemeMode.valueOf(themeMode) }.getOrDefault(AppThemeMode.DARK),
+        useDynamicColor = useDynamicColor,
+        startLine = startLine,
+        botsCount = botsCount,
+        proxyMode = runCatching { ProxyMode.valueOf(proxyMode) }.getOrDefault(ProxyMode.DEF),
+        selectedConfigId = selectedConfigId,
+        selectedWordlistId = selectedWordlistId
+    )
+
+    companion object {
+        fun fromSnapshot(snapshot: PersistedSettingsSnapshot): SettingsEntity = SettingsEntity(
+            id = 0,
+            requestTimeoutSec = snapshot.requestTimeoutSec,
+            maxRetries = snapshot.maxRetries,
+            autoSaveHits = snapshot.autoSaveHits,
+            ignoreEmptyLines = snapshot.ignoreEmptyLines,
+            showTimestampsInConsole = snapshot.showTimestampsInConsole,
+            soundOnHit = snapshot.soundOnHit,
+            soundOnFinish = snapshot.soundOnFinish,
+            keepAwakeEnabled = snapshot.keepAwakeEnabled,
+            proxyJudgeUrl = snapshot.proxyJudgeUrl,
+            accentHex = snapshot.accentHex,
+            startLine = snapshot.startLine,
+            botsCount = snapshot.botsCount,
+            proxyMode = snapshot.proxyMode.name,
+            selectedConfigId = snapshot.selectedConfigId,
+            selectedWordlistId = snapshot.selectedWordlistId,
+            themeMode = snapshot.themeMode.name,
+            useDynamicColor = snapshot.useDynamicColor
+        )
+    }
 }
 
 @Entity(tableName = "runner_session")
@@ -155,4 +223,22 @@ data class RunnerSessionEntity(
     val workersPacked: String = "",
     val resultsPacked: String = "",
     val lastStatusLog: String = ""
-)
+) {
+    fun toSnapshot(): RunnerSessionSnapshot = RunnerSessionSnapshot(
+        configId = configId,
+        wordlistId = wordlistId,
+        isRunning = isRunning,
+        progressCurrent = progressCurrent,
+        progressTotal = progressTotal,
+        hits = hits,
+        custom = custom,
+        bad = bad,
+        retries = retries,
+        toCheck = toCheck,
+        cpm = cpm,
+        elapsedSeconds = elapsedSeconds,
+        workersPacked = workersPacked,
+        resultsPacked = resultsPacked,
+        lastStatusLog = lastStatusLog
+    )
+}

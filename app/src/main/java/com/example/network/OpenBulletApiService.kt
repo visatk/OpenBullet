@@ -1,5 +1,6 @@
 package com.example.network
 
+import com.example.BuildConfig
 import com.example.model.ProxyItem
 import com.example.model.ProxyProtocol
 import com.squareup.moshi.Moshi
@@ -29,22 +30,42 @@ interface OpenBulletApiService {
     suspend fun fetchRemoteText(@Url url: String): ResponseBody
 }
 
+/**
+ * Thread-safe per-session cookie jar supporting domain/path matching and expiration cleanup.
+ */
 class InMemoryCookieJar : CookieJar {
-    private val store = mutableMapOf<String, MutableList<Cookie>>()
+    private val lock = Any()
+    private val cookies = linkedMapOf<String, Cookie>()
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        val list = store.getOrPut(url.host) { mutableListOf() }
-        cookies.forEach { newCookie ->
-            list.removeAll { it.name == newCookie.name }
-            list.add(newCookie)
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            for (cookie in cookies) {
+                val key = "${cookie.domain}|${cookie.path}|${cookie.name}"
+                if (cookie.expiresAt <= now) {
+                    this.cookies.remove(key)
+                } else {
+                    this.cookies[key] = cookie
+                }
+            }
         }
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         val now = System.currentTimeMillis()
-        val list = store[url.host] ?: return emptyList()
-        list.removeAll { it.expiresAt < now }
-        return list.toList()
+        synchronized(lock) {
+            val iter = cookies.values.iterator()
+            val matching = mutableListOf<Cookie>()
+            while (iter.hasNext()) {
+                val cookie = iter.next()
+                if (cookie.expiresAt <= now) {
+                    iter.remove()
+                } else if (cookie.matches(url)) {
+                    matching.add(cookie)
+                }
+            }
+            return matching
+        }
     }
 }
 
@@ -58,7 +79,11 @@ object OpenBulletNetworkClient {
 
     private val loggingInterceptor: HttpLoggingInterceptor by lazy {
         HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
     }
 
@@ -99,10 +124,11 @@ object OpenBulletNetworkClient {
         followRedirects: Boolean = true,
         cookieJar: CookieJar? = null
     ): OkHttpClient {
+        val safeTimeoutSec = timeoutSec.coerceIn(1, 120).toLong()
         val builder = baseOkHttpClient.newBuilder()
-            .connectTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
-            .readTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
-            .writeTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
+            .connectTimeout(safeTimeoutSec, TimeUnit.SECONDS)
+            .readTimeout(safeTimeoutSec, TimeUnit.SECONDS)
+            .writeTimeout(safeTimeoutSec, TimeUnit.SECONDS)
             .followRedirects(followRedirects)
             .followSslRedirects(followRedirects)
 
@@ -110,12 +136,12 @@ object OpenBulletNetworkClient {
             builder.cookieJar(cookieJar)
         }
 
-        if (proxyItem != null) {
+        if (proxyItem != null && proxyItem.host.isNotBlank() && proxyItem.port in 1..65535) {
             val type = when (proxyItem.protocol) {
                 ProxyProtocol.HTTP -> Proxy.Type.HTTP
                 ProxyProtocol.SOCKS4, ProxyProtocol.SOCKS5 -> Proxy.Type.SOCKS
             }
-            builder.proxy(Proxy(type, InetSocketAddress(proxyItem.host, proxyItem.port)))
+            builder.proxy(Proxy(type, InetSocketAddress(proxyItem.host.trim(), proxyItem.port)))
         }
         return builder.build()
     }

@@ -64,9 +64,9 @@ object NativeScannerBridge {
             if (code != null) {
                 val outcome = KeyScanOutcome.fromCode(code)
                 val matched = when (outcome) {
-                    KeyScanOutcome.FAIL -> failureKeys.firstOrNull { body.contains(it, ignoreCase = true) }
-                    KeyScanOutcome.HIT -> successKeys.firstOrNull { body.contains(it, ignoreCase = true) }
-                    KeyScanOutcome.CUSTOM -> customKeys.firstOrNull { body.contains(it, ignoreCase = true) }
+                    KeyScanOutcome.FAIL -> failureKeys.firstOrNull { it.isNotEmpty() && body.contains(it, ignoreCase = true) }
+                    KeyScanOutcome.HIT -> successKeys.firstOrNull { it.isNotEmpty() && body.contains(it, ignoreCase = true) }
+                    KeyScanOutcome.CUSTOM -> customKeys.firstOrNull { it.isNotEmpty() && body.contains(it, ignoreCase = true) }
                     KeyScanOutcome.NONE -> null
                 }
                 return outcome to matched
@@ -92,8 +92,8 @@ object NativeScannerBridge {
             if (nativeVal != null) return nativeVal
         }
         var hash = -3750763034362895579L // 14695981039346656037UL signed
-        for (ch in line) {
-            hash = hash xor ch.code.toLong()
+        for (b in line.toByteArray(Charsets.UTF_8)) {
+            hash = hash xor (b.toInt() and 0xFF).toLong()
             hash *= 1099511628211L
         }
         return hash

@@ -7,7 +7,9 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.data.local.HitDbEntity
 import com.example.data.local.OpenBulletDatabase
+import com.example.data.local.ProxyCheckUpdate
 import com.example.data.local.RunnerSessionEntity
+import com.example.data.local.WordlistFileStore
 import com.example.model.ProxyItem
 import com.example.model.ProxyMode
 import com.example.model.ProxyStatus
@@ -15,14 +17,15 @@ import com.example.model.ResultTab
 import com.example.network.HttpCheckResult
 import com.example.network.HttpExecutionEngine
 import com.example.network.LoliScriptParser
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.example.util.DateTimeFormats
+import com.example.viewmodel.RunnerPacketHelper
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -36,8 +39,10 @@ class RunnerJobWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val db = OpenBulletDatabase.getInstance(applicationContext)
-        val configId = inputData.getString(KEY_CONFIG_ID) ?: return@withContext Result.failure()
-        val wordlistId = inputData.getString(KEY_WORDLIST_ID) ?: return@withContext Result.failure()
+        val configId = inputData.getString(KEY_CONFIG_ID)
+            ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Missing config ID."))
+        val wordlistId = inputData.getString(KEY_WORDLIST_ID)
+            ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Missing wordlist ID."))
         val startLine = inputData.getInt(KEY_START_LINE, 1)
         val botsCount = inputData.getInt(KEY_BOTS_COUNT, 1).coerceIn(1, 200)
         val proxyModeStr = inputData.getString(KEY_PROXY_MODE) ?: ProxyMode.DEF.name
@@ -50,36 +55,45 @@ class RunnerJobWorker(
         val initialToCheck = inputData.getInt(KEY_INITIAL_TO_CHECK, 0)
         val initialElapsedSec = inputData.getLong(KEY_INITIAL_ELAPSED_SEC, 0L)
 
-        val config = db.configDao().getById(configId)?.toModel() ?: return@withContext Result.failure()
-        val wordlist = db.wordlistDao().getById(wordlistId)?.toModel() ?: return@withContext Result.failure()
+        val config = db.configDao().getById(configId)?.toModel()
+            ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Selected config no longer exists."))
+        val wordlistEntity = db.wordlistDao().getById(wordlistId)
+            ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Selected wordlist no longer exists."))
+        val wordlistName = wordlistEntity.name
+
         val settings = db.settingsDao().getSnapshot()
         val timeoutSec = settings?.requestTimeoutSec ?: 10
         val maxRetries = (settings?.maxRetries ?: 3).coerceIn(0, 15)
         val autoSaveHits = settings?.autoSaveHits ?: true
+        val ignoreEmptyLines = settings?.ignoreEmptyLines ?: true
         val keepAwake = settings?.keepAwakeEnabled ?: true
 
-        val lines = wordlist.lines
+        val lines = WordlistFileStore(applicationContext).readLines(wordlistEntity.id, wordlistEntity.linesRaw)
         if (lines.isEmpty()) {
             return@withContext Result.success(
-                workDataOf(KEY_LOG_LINE to "Wordlist '${wordlist.name}' has 0 lines.")
+                workDataOf(KEY_LOG_LINE to "Wordlist '$wordlistName' has 0 lines.")
             )
         }
 
         val totalCount = lines.size
         val startIdx = (startLine - 1).coerceIn(0, lines.lastIndex)
 
-        runCatching {
+        try {
             setForeground(
                 BackgroundKeepAliveHelper.buildForegroundInfo(
                     context = applicationContext,
                     workId = id,
                     notificationId = BackgroundKeepAliveHelper.RUNNER_NOTIFICATION_ID,
                     title = "OpenBullet • ${config.name}",
-                    contentText = "Launching $botsCount bot(s) on ${wordlist.name}...",
+                    contentText = "Launching $botsCount bot(s) on $wordlistName...",
                     progressCurrent = startIdx,
                     progressTotal = totalCount
                 )
             )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Continue in case foreground promotion is restricted
         }
 
         BackgroundKeepAliveHelper.withKeepAwakeLocks(applicationContext, enabled = keepAwake) {
@@ -90,7 +104,6 @@ class RunnerJobWorker(
 
             val parsedScript = LoliScriptParser.parse(config.scriptPreview)
 
-            // Lock-free atomic cursor for zero-stall continuous worker pool
             val nextLineCursor = AtomicInteger(startIdx)
             val processedCount = AtomicInteger(startIdx)
             val hitsCount = AtomicInteger(initialHits)
@@ -99,23 +112,18 @@ class RunnerJobWorker(
             val retriesCount = AtomicInteger(initialRetries)
             val toCheckCount = AtomicInteger(initialToCheck)
 
-            // Smart proxy pool with cooldown & auto-unban on starvation
             val proxyCursor = AtomicInteger(0)
             val proxyFailures = ConcurrentHashMap<String, Int>()
             val proxyCooldownUntil = ConcurrentHashMap<String, Long>()
+            val pendingProxyUpdates = ConcurrentHashMap<String, ProxyCheckUpdate>()
 
-            // Live bot slot table & result queue
             val activeBotSlots = ConcurrentHashMap<Int, String>()
             val pendingResultRows = ConcurrentLinkedQueue<String>()
             val recentPersistedResults = ConcurrentLinkedQueue<String>()
             val pendingHitEntities = ConcurrentLinkedQueue<HitDbEntity>()
-
-            // Sliding-window completion timestamps (ms) for accurate real-time CPM & ETA
             val completionTimestamps = ConcurrentLinkedQueue<Long>()
 
             val runStartMs = System.currentTimeMillis()
-            val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
-
             val modeDesc = if (initialElapsedSec > 0L) "Resumed" else "Started"
             val startLog = "$modeDesc continuous pool ($botsCount bots, line ${startIdx + 1}/$totalCount, proxies=${if (useProxies) usableProxies.size else 0})."
 
@@ -165,21 +173,34 @@ class RunnerJobWorker(
                         return candidate
                     }
                 }
-                // Auto-unban: all proxies are in cooldown/banned -> reset cooldowns so run never stalls
                 proxyCooldownUntil.clear()
                 proxyFailures.clear()
                 val idx = (proxyCursor.getAndIncrement() and Int.MAX_VALUE) % size
                 return usableProxies[idx]
             }
 
-            suspend fun flushTelemetry(forceNotification: Boolean, lastNotifTimeRef: LongArray) {
-                val toInsert = mutableListOf<HitDbEntity>()
+            suspend fun drainDatabasesAndComputeTelemetry(
+                markRunning: Boolean,
+                statusLog: String
+            ): TelemetrySnapshot {
+                val toInsertHits = mutableListOf<HitDbEntity>()
                 while (true) {
                     val entity = pendingHitEntities.poll() ?: break
-                    toInsert.add(entity)
+                    toInsertHits.add(entity)
                 }
-                if (toInsert.isNotEmpty()) {
-                    db.hitDbDao().insertAll(toInsert)
+                if (toInsertHits.isNotEmpty()) {
+                    db.hitDbDao().insertAll(toInsertHits)
+                }
+
+                if (pendingProxyUpdates.isNotEmpty()) {
+                    val updates = mutableListOf<ProxyCheckUpdate>()
+                    val keys = pendingProxyUpdates.keys().toList()
+                    for (key in keys) {
+                        pendingProxyUpdates.remove(key)?.let { updates.add(it) }
+                    }
+                    if (updates.isNotEmpty()) {
+                        db.proxyDao().updateCheckResultsBatch(updates)
+                    }
                 }
 
                 val batchResults = mutableListOf<String>()
@@ -215,36 +236,27 @@ class RunnerJobWorker(
                 val remainingLines = (totalCount - currentDone).coerceAtLeast(0)
                 val etaSec = if (cpm > 0) ((remainingLines * 60L) / cpm.toLong()) else 0L
 
-                val workersPacked = activeBotSlots.entries
-                    .sortedBy { it.key }
-                    .take(16)
-                    .joinToString("\u001E") { it.value }
-                val batchResultsPacked = batchResults.joinToString("\u001E")
-                val persistedResultsPacked = recentPersistedResults.toList().takeLast(30).joinToString("\u001E")
-
-                setProgress(
-                    buildProgressData(
-                        current = currentDone,
-                        total = totalCount,
-                        hits = hitsCount.get(),
-                        custom = customCount.get(),
-                        bad = badCount.get(),
-                        retries = retriesCount.get(),
-                        toCheck = toCheckCount.get(),
-                        cpm = cpm,
-                        elapsedSec = totalElapsedSec,
-                        etaSec = etaSec,
-                        workersPacked = workersPacked,
-                        resultsPacked = batchResultsPacked,
-                        logLine = null
+                val workersPacked = if (markRunning) {
+                    RunnerPacketHelper.packWithByteBudget(
+                        entries = activeBotSlots.entries.sortedBy { it.key }.take(16).map { it.value },
+                        maxBytes = MAX_WORKERS_BYTES
                     )
+                } else ""
+
+                val batchResultsPacked = RunnerPacketHelper.packWithByteBudget(
+                    entries = batchResults,
+                    maxBytes = MAX_RESULTS_BYTES
+                )
+                val persistedResultsPacked = RunnerPacketHelper.packWithByteBudget(
+                    entries = recentPersistedResults.toList().takeLast(30),
+                    maxBytes = MAX_RESULTS_BYTES
                 )
 
                 db.runnerSessionDao().upsert(
                     RunnerSessionEntity(
                         configId = configId,
                         wordlistId = wordlistId,
-                        isRunning = true,
+                        isRunning = markRunning,
                         progressCurrent = currentDone,
                         progressTotal = totalCount,
                         hits = hitsCount.get(),
@@ -256,184 +268,255 @@ class RunnerJobWorker(
                         elapsedSeconds = totalElapsedSec,
                         workersPacked = workersPacked,
                         resultsPacked = persistedResultsPacked,
-                        lastStatusLog = startLog
+                        lastStatusLog = statusLog
                     )
                 )
 
-                if (forceNotification || nowMs - lastNotifTimeRef[0] >= 1000L || currentDone >= totalCount) {
+                return TelemetrySnapshot(
+                    currentDone = currentDone,
+                    cpm = cpm,
+                    totalElapsedSec = totalElapsedSec,
+                    etaSec = etaSec,
+                    workersPacked = workersPacked,
+                    batchResultsPacked = batchResultsPacked,
+                    persistedResultsPacked = persistedResultsPacked
+                )
+            }
+
+            suspend fun flushTelemetry(forceNotification: Boolean, lastNotifTimeRef: LongArray) {
+                val snap = drainDatabasesAndComputeTelemetry(markRunning = true, statusLog = startLog)
+                setProgress(
+                    buildProgressData(
+                        current = snap.currentDone,
+                        total = totalCount,
+                        hits = hitsCount.get(),
+                        custom = customCount.get(),
+                        bad = badCount.get(),
+                        retries = retriesCount.get(),
+                        toCheck = toCheckCount.get(),
+                        cpm = snap.cpm,
+                        elapsedSec = snap.totalElapsedSec,
+                        etaSec = snap.etaSec,
+                        workersPacked = snap.workersPacked,
+                        resultsPacked = snap.batchResultsPacked,
+                        logLine = null
+                    )
+                )
+
+                val nowMs = System.currentTimeMillis()
+                if (forceNotification || nowMs - lastNotifTimeRef[0] >= 1000L || snap.currentDone >= totalCount) {
                     lastNotifTimeRef[0] = nowMs
-                    val pct = if (totalCount > 0) (currentDone * 100) / totalCount else 0
-                    runCatching {
+                    val pct = if (totalCount > 0) (snap.currentDone * 100) / totalCount else 0
+                    try {
                         setForeground(
                             BackgroundKeepAliveHelper.buildForegroundInfo(
                                 context = applicationContext,
                                 workId = id,
                                 notificationId = BackgroundKeepAliveHelper.RUNNER_NOTIFICATION_ID,
                                 title = "OpenBullet • ${config.name} ($pct%)",
-                                contentText = "$currentDone/$totalCount • Hits: ${hitsCount.get()} • Custom: ${customCount.get()} • CPM: $cpm",
-                                progressCurrent = currentDone,
+                                contentText = "${snap.currentDone}/$totalCount • Hits: ${hitsCount.get()} • Custom: ${customCount.get()} • CPM: ${snap.cpm}",
+                                progressCurrent = snap.currentDone,
                                 progressTotal = totalCount
                             )
                         )
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Throwable) {
+                        // Non-fatal notification update failure
                     }
                 }
             }
 
             val lastNotifRef = longArrayOf(0L)
 
-            coroutineScope {
-                val workersFinished = AtomicInteger(0)
+            try {
+                coroutineScope {
+                    val workersFinished = AtomicInteger(0)
 
-                // Dedicated 250ms telemetry ticker for smooth 60fps UI & batched Room writes
-                val tickerJob = launch {
-                    while (isActive && !isStopped && workersFinished.get() < botsCount) {
-                        delay(250L)
-                        flushTelemetry(forceNotification = false, lastNotifTimeRef = lastNotifRef)
+                    val tickerJob = launch {
+                        while (isActive && !isStopped && workersFinished.get() < botsCount) {
+                            delay(250L)
+                            flushTelemetry(forceNotification = false, lastNotifTimeRef = lastNotifRef)
+                        }
                     }
-                }
 
-                // Launch N persistent bot workers pulling from the lock-free atomic line cursor
-                val botJobs = (1..botsCount).map { botId ->
-                    launch {
-                        try {
-                            while (isActive && !isStopped) {
-                                val lineIndex = nextLineCursor.getAndIncrement()
-                                if (lineIndex >= totalCount) break
+                    val botJobs = (1..botsCount).map { botId ->
+                        launch {
+                            try {
+                                while (isActive && !isStopped) {
+                                    val lineIndex = nextLineCursor.getAndIncrement()
+                                    if (lineIndex >= totalCount) break
 
-                                val rawLine = lines[lineIndex].trim()
-                                if (rawLine.isEmpty()) {
-                                    badCount.incrementAndGet()
-                                    processedCount.incrementAndGet()
-                                    completionTimestamps.add(System.currentTimeMillis())
-                                    continue
-                                }
+                                    val rawLine = lines[lineIndex].trim()
+                                    if (rawLine.isEmpty()) {
+                                        if (!ignoreEmptyLines) {
+                                            badCount.incrementAndGet()
+                                        }
+                                        processedCount.incrementAndGet()
+                                        completionTimestamps.add(System.currentTimeMillis())
+                                        continue
+                                    }
 
-                                var attempt = 0
-                                var usedProxy: ProxyItem? = null
-                                var finalResult: HttpCheckResult
-                                do {
-                                    usedProxy = acquireNextProxy()
-                                    val liveProxyLabel = if (usedProxy != null) "${usedProxy.host}:${usedProxy.port}" else "Direct"
-                                    val phaseLabel = if (attempt == 0) "CHECKING" else "RETRY #$attempt"
-                                    activeBotSlots[botId] = "$botId\u001F${rawLine.take(40)}\u001F$liveProxyLabel\u001F$phaseLabel\u001FRUNNING"
+                                    var attempt = 0
+                                    var usedProxy: ProxyItem?
+                                    var finalResult: HttpCheckResult
+                                    do {
+                                        usedProxy = acquireNextProxy()
+                                        val liveProxyLabel = if (usedProxy != null) "${usedProxy.host}:${usedProxy.port}" else "Direct"
+                                        val phaseLabel = if (attempt == 0) "CHECKING" else "RETRY #$attempt"
+                                        activeBotSlots[botId] = "$botId\u001F${rawLine.take(40)}\u001F$liveProxyLabel\u001F$phaseLabel\u001FRUNNING"
 
-                                    finalResult = HttpExecutionEngine.executeCheck(
-                                        rawLine = rawLine,
-                                        script = parsedScript,
-                                        timeoutSec = timeoutSec,
-                                        proxyItem = usedProxy
-                                    )
+                                        finalResult = HttpExecutionEngine.executeCheck(
+                                            rawLine = rawLine,
+                                            script = parsedScript,
+                                            timeoutSec = timeoutSec,
+                                            proxyItem = usedProxy
+                                        )
 
-                                    if (finalResult.outcomeType == "RETRY" && attempt < maxRetries && isActive && !isStopped) {
-                                        retriesCount.incrementAndGet()
-                                        if (usedProxy != null) {
-                                            val failTotal = (proxyFailures[usedProxy.id] ?: 0) + 1
-                                            proxyFailures[usedProxy.id] = failTotal
-                                            if (finalResult.httpCode == 403 || finalResult.httpCode == 429) {
-                                                // Place proxy in 30-second cooldown and mark BANNED in DB
-                                                proxyCooldownUntil[usedProxy.id] = System.currentTimeMillis() + 30_000L
-                                                db.proxyDao().updateCheckResult(
-                                                    usedProxy.id,
-                                                    ProxyStatus.BANNED.name,
-                                                    usedProxy.pingMs,
-                                                    "HTTP ${finalResult.httpCode}"
-                                                )
-                                            } else if (failTotal >= 3) {
-                                                proxyCooldownUntil[usedProxy.id] = System.currentTimeMillis() + 45_000L
-                                                db.proxyDao().updateCheckResult(
-                                                    usedProxy.id,
-                                                    ProxyStatus.BAD.name,
-                                                    null,
-                                                    "Timeout"
+                                        if (finalResult.outcomeType == "RETRY" && attempt < maxRetries && isActive && !isStopped) {
+                                            retriesCount.incrementAndGet()
+                                            if (usedProxy != null) {
+                                                val failTotal = (proxyFailures[usedProxy.id] ?: 0) + 1
+                                                proxyFailures[usedProxy.id] = failTotal
+                                                if (finalResult.httpCode == 403 || finalResult.httpCode == 429) {
+                                                    proxyCooldownUntil[usedProxy.id] = System.currentTimeMillis() + 30_000L
+                                                    pendingProxyUpdates[usedProxy.id] = ProxyCheckUpdate(
+                                                        id = usedProxy.id,
+                                                        status = ProxyStatus.BANNED.name,
+                                                        pingMs = usedProxy.pingMs,
+                                                        country = "HTTP ${finalResult.httpCode}"
+                                                    )
+                                                } else if (failTotal >= 3) {
+                                                    proxyCooldownUntil[usedProxy.id] = System.currentTimeMillis() + 45_000L
+                                                    pendingProxyUpdates[usedProxy.id] = ProxyCheckUpdate(
+                                                        id = usedProxy.id,
+                                                        status = ProxyStatus.BAD.name,
+                                                        pingMs = null,
+                                                        country = "Timeout"
+                                                    )
+                                                }
+                                            }
+                                            attempt++
+                                        } else {
+                                            break
+                                        }
+                                    } while (attempt <= maxRetries)
+
+                                    if (usedProxy != null && finalResult.outcomeType != "RETRY" && finalResult.httpCode > 0) {
+                                        proxyFailures.remove(usedProxy.id)
+                                        proxyCooldownUntil.remove(usedProxy.id)
+                                        pendingProxyUpdates[usedProxy.id] = ProxyCheckUpdate(
+                                            id = usedProxy.id,
+                                            status = ProxyStatus.AVAILABLE.name,
+                                            pingMs = finalResult.latencyMs.toInt(),
+                                            country = usedProxy.country.ifBlank { "Verified" }
+                                        )
+                                    }
+
+                                    val proxyLabel = if (usedProxy != null) "${usedProxy.host}:${usedProxy.port}" else "Direct"
+                                    activeBotSlots[botId] = "$botId\u001F${rawLine.take(40)}\u001F$proxyLabel\u001F${finalResult.status}\u001F${finalResult.outcomeType}"
+
+                                    val nowClock = DateTimeFormats.formatClockNow()
+                                    when (finalResult.outcomeType) {
+                                        "HIT" -> {
+                                            hitsCount.incrementAndGet()
+                                            pendingResultRows.add(
+                                                packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.HITS.name)
+                                            )
+                                            if (autoSaveHits) {
+                                                pendingHitEntities.add(
+                                                    HitDbEntity(
+                                                        id = UUID.randomUUID().toString(),
+                                                        date = nowClock,
+                                                        data = rawLine,
+                                                        type = ResultTab.HITS.name,
+                                                        configName = config.name,
+                                                        wordlistName = wordlistName,
+                                                        capturedData = finalResult.capturedData
+                                                    )
                                                 )
                                             }
                                         }
-                                        attempt++
-                                    } else {
-                                        break
-                                    }
-                                } while (attempt <= maxRetries)
-
-                                if (usedProxy != null && finalResult.outcomeType != "RETRY" && finalResult.httpCode > 0) {
-                                    proxyFailures.remove(usedProxy.id)
-                                    proxyCooldownUntil.remove(usedProxy.id)
-                                    db.proxyDao().updateCheckResult(
-                                        id = usedProxy.id,
-                                        status = ProxyStatus.AVAILABLE.name,
-                                        pingMs = finalResult.latencyMs.toInt(),
-                                        country = usedProxy.country.ifBlank { "Verified" }
-                                    )
-                                }
-
-                                val proxyLabel = if (usedProxy != null) "${usedProxy.host}:${usedProxy.port}" else "Direct"
-                                activeBotSlots[botId] = "$botId\u001F${rawLine.take(40)}\u001F$proxyLabel\u001F${finalResult.status}\u001F${finalResult.outcomeType}"
-
-                                val nowClock = synchronized(timeFmt) { timeFmt.format(Date()) }
-                                when (finalResult.outcomeType) {
-                                    "HIT" -> {
-                                        hitsCount.incrementAndGet()
-                                        pendingResultRows.add(
-                                            packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.HITS.name)
-                                        )
-                                        if (autoSaveHits) {
-                                            pendingHitEntities.add(
-                                                HitDbEntity(
-                                                    id = UUID.randomUUID().toString(),
-                                                    date = nowClock,
-                                                    data = rawLine,
-                                                    type = ResultTab.HITS.name,
-                                                    configName = config.name,
-                                                    wordlistName = wordlist.name,
-                                                    capturedData = finalResult.capturedData
+                                        "CUSTOM" -> {
+                                            customCount.incrementAndGet()
+                                            pendingResultRows.add(
+                                                packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.CUSTOM.name)
+                                            )
+                                            if (autoSaveHits) {
+                                                pendingHitEntities.add(
+                                                    HitDbEntity(
+                                                        id = UUID.randomUUID().toString(),
+                                                        date = nowClock,
+                                                        data = rawLine,
+                                                        type = ResultTab.CUSTOM.name,
+                                                        configName = config.name,
+                                                        wordlistName = wordlistName,
+                                                        capturedData = finalResult.capturedData
+                                                    )
                                                 )
+                                            }
+                                        }
+                                        "BAD" -> badCount.incrementAndGet()
+                                        "RETRY" -> retriesCount.incrementAndGet()
+                                        else -> {
+                                            toCheckCount.incrementAndGet()
+                                            pendingResultRows.add(
+                                                packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.TO_CHECK.name)
                                             )
                                         }
                                     }
-                                    "CUSTOM" -> {
-                                        customCount.incrementAndGet()
-                                        pendingResultRows.add(
-                                            packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.CUSTOM.name)
-                                        )
-                                        if (autoSaveHits) {
-                                            pendingHitEntities.add(
-                                                HitDbEntity(
-                                                    id = UUID.randomUUID().toString(),
-                                                    date = nowClock,
-                                                    data = rawLine,
-                                                    type = ResultTab.CUSTOM.name,
-                                                    configName = config.name,
-                                                    wordlistName = wordlist.name,
-                                                    capturedData = finalResult.capturedData
-                                                )
-                                            )
-                                        }
-                                    }
-                                    "BAD" -> badCount.incrementAndGet()
-                                    "RETRY" -> retriesCount.incrementAndGet()
-                                    else -> {
-                                        toCheckCount.incrementAndGet()
-                                        pendingResultRows.add(
-                                            packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.TO_CHECK.name)
-                                        )
-                                    }
-                                }
 
-                                processedCount.incrementAndGet()
-                                completionTimestamps.add(System.currentTimeMillis())
+                                    processedCount.incrementAndGet()
+                                    completionTimestamps.add(System.currentTimeMillis())
+                                }
+                            } finally {
+                                activeBotSlots.remove(botId)
+                                workersFinished.incrementAndGet()
                             }
-                        } finally {
-                            activeBotSlots.remove(botId)
-                            workersFinished.incrementAndGet()
                         }
                     }
+
+                    botJobs.forEach { it.join() }
+                    tickerJob.cancel()
                 }
-
-                botJobs.forEach { it.join() }
-                tickerJob.cancel()
+            } finally {
+                withContext(NonCancellable) {
+                    val sessionElapsedSec = ((System.currentTimeMillis() - runStartMs) / 1000L).coerceAtLeast(0L)
+                    val totalElapsedSec = initialElapsedSec + sessionElapsedSec
+                    val checkedInThisSession = (processedCount.get() - startIdx).coerceAtLeast(0)
+                    val finalCpm = if (sessionElapsedSec > 0) ((checkedInThisSession * 60L) / sessionElapsedSec).toInt() else 0
+                    val finalLog = if (isStopped) {
+                        "Runner stopped at line ${processedCount.get()}/$totalCount. Hits: ${hitsCount.get()}."
+                    } else {
+                        "Runner finished ${processedCount.get()}/$totalCount. Hits: ${hitsCount.get()}, Custom: ${customCount.get()}."
+                    }
+                    // Drain all buffered hits, proxy status updates, and finalize runner_session safely
+                    val drained = drainDatabasesAndComputeTelemetry(
+                        markRunning = false,
+                        statusLog = finalLog
+                    )
+                    // Ensure final session row reflects exact finalCpm & elapsed
+                    db.runnerSessionDao().upsert(
+                        RunnerSessionEntity(
+                            configId = configId,
+                            wordlistId = wordlistId,
+                            isRunning = false,
+                            progressCurrent = processedCount.get(),
+                            progressTotal = totalCount,
+                            hits = hitsCount.get(),
+                            custom = customCount.get(),
+                            bad = badCount.get(),
+                            retries = retriesCount.get(),
+                            toCheck = toCheckCount.get(),
+                            cpm = finalCpm,
+                            elapsedSeconds = totalElapsedSec,
+                            workersPacked = "",
+                            resultsPacked = drained.persistedResultsPacked,
+                            lastStatusLog = finalLog
+                        )
+                    )
+                }
             }
-
-            // Final flush after all bots complete or stop
-            flushTelemetry(forceNotification = true, lastNotifTimeRef = lastNotifRef)
 
             val sessionElapsedSec = ((System.currentTimeMillis() - runStartMs) / 1000L).coerceAtLeast(0L)
             val totalElapsedSec = initialElapsedSec + sessionElapsedSec
@@ -444,26 +527,6 @@ class RunnerJobWorker(
             } else {
                 "Runner finished ${processedCount.get()}/$totalCount. Hits: ${hitsCount.get()}, Custom: ${customCount.get()}."
             }
-
-            db.runnerSessionDao().upsert(
-                RunnerSessionEntity(
-                    configId = configId,
-                    wordlistId = wordlistId,
-                    isRunning = false,
-                    progressCurrent = processedCount.get(),
-                    progressTotal = totalCount,
-                    hits = hitsCount.get(),
-                    custom = customCount.get(),
-                    bad = badCount.get(),
-                    retries = retriesCount.get(),
-                    toCheck = toCheckCount.get(),
-                    cpm = finalCpm,
-                    elapsedSeconds = totalElapsedSec,
-                    workersPacked = "",
-                    resultsPacked = recentPersistedResults.toList().takeLast(30).joinToString("\u001E"),
-                    lastStatusLog = finalLog
-                )
-            )
 
             Result.success(
                 buildProgressData(
@@ -484,6 +547,16 @@ class RunnerJobWorker(
             )
         }
     }
+
+    private data class TelemetrySnapshot(
+        val currentDone: Int,
+        val cpm: Int,
+        val totalElapsedSec: Long,
+        val etaSec: Long,
+        val workersPacked: String,
+        val batchResultsPacked: String,
+        val persistedResultsPacked: String
+    )
 
     private fun selectUsableProxies(all: List<ProxyItem>): List<ProxyItem> {
         val alive = all.filter { it.status == ProxyStatus.AVAILABLE }
@@ -544,6 +617,9 @@ class RunnerJobWorker(
     companion object {
         const val UNIQUE_WORK_NAME = "openbullet_runner_job"
         const val WORK_TAG = "runner_job_tag"
+
+        private const val MAX_WORKERS_BYTES = 2500
+        private const val MAX_RESULTS_BYTES = 5000
 
         const val KEY_CONFIG_ID = "config_id"
         const val KEY_WORDLIST_ID = "wordlist_id"

@@ -6,16 +6,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -24,13 +26,19 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,8 +49,9 @@ import com.example.model.ParseMode
 import com.example.model.ScriptFunctionType
 import com.example.ui.components.ObBorderedButton
 import com.example.ui.components.ObPanel
+import com.example.ui.components.obOutlinedTextFieldColors
 import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.ObColors
+import com.example.ui.theme.ObTheme
 
 @Composable
 fun ConfigBlockCard(
@@ -56,28 +65,28 @@ fun ConfigBlockCard(
 ) {
     val (badgeText, accentColor) = when (block) {
         is ConfigBlock.RequestBlock -> "REQUEST ${block.method}" to MaterialTheme.colorScheme.primary
-        is ConfigBlock.ParseBlock -> "PARSE ${block.mode.label}" to ObColors.StatusCustomOrange
-        is ConfigBlock.KeyCheckBlock -> "KEYCHECK" to ObColors.StatusHitGreen
-        is ConfigBlock.FunctionBlock -> "FUNCTION ${block.functionType.loliKeyword}" to ObColors.StatusBannedPurple
+        is ConfigBlock.ParseBlock -> "PARSE ${block.mode.label}" to ObTheme.colors.custom
+        is ConfigBlock.KeyCheckBlock -> "KEYCHECK" to ObTheme.colors.hit
+        is ConfigBlock.FunctionBlock -> "FUNCTION ${block.functionType.loliKeyword}" to ObTheme.colors.banned
     }
 
     ObPanel(
-        backgroundColor = ObColors.SurfacePanel,
-        borderColor = ObColors.BorderHairline,
+        backgroundColor = MaterialTheme.colorScheme.surfaceContainer,
+        borderColor = MaterialTheme.colorScheme.outlineVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(ObColors.SurfaceTableHeader)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = accentColor.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.6f))
+                    color = accentColor.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.55f))
                 ) {
                     Text(
                         text = "#${index + 1} $badgeText",
@@ -92,19 +101,34 @@ fun ConfigBlockCard(
                 Spacer(Modifier.weight(1f))
                 if (index > 0) {
                     IconButton(onClick = onMoveUp, modifier = Modifier.minimumInteractiveComponentSize()) {
-                        Icon(Icons.Outlined.ArrowUpward, contentDescription = "Move block up", tint = ObColors.TextSecondary, modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Outlined.ArrowUpward,
+                            contentDescription = "Move block up",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 if (index < totalCount - 1) {
                     IconButton(onClick = onMoveDown, modifier = Modifier.minimumInteractiveComponentSize()) {
-                        Icon(Icons.Outlined.ArrowDownward, contentDescription = "Move block down", tint = ObColors.TextSecondary, modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Outlined.ArrowDownward,
+                            contentDescription = "Move block down",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize()) {
-                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete block", tint = ObColors.StatusBadRed, modifier = Modifier.size(18.dp))
+                    Icon(
+                        Icons.Outlined.DeleteOutline,
+                        contentDescription = "Delete block",
+                        tint = ObTheme.colors.bad,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
-            HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+            HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
             Column(
                 modifier = Modifier
@@ -128,7 +152,7 @@ private fun RequestBlockFields(
     block: ConfigBlock.RequestBlock,
     onUpdate: (ConfigBlock) -> Unit
 ) {
-    val methods = listOf("GET", "POST", "PUT", "DELETE", "HEAD")
+    val methods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -141,7 +165,7 @@ private fun RequestBlockFields(
                 isActive = block.method.equals(m, ignoreCase = true),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text(m, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                Text(m, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
             }
         }
     }
@@ -153,7 +177,7 @@ private fun RequestBlockFields(
         singleLine = true,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     )
 
@@ -165,11 +189,11 @@ private fun RequestBlockFields(
         maxLines = 4,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     )
 
-    if (block.method.uppercase() in setOf("POST", "PUT")) {
+    if (block.method.uppercase() in setOf("POST", "PUT", "PATCH", "DELETE")) {
         OutlinedTextField(
             value = block.contentType,
             onValueChange = { onUpdate(block.copy(contentType = it)) },
@@ -177,18 +201,18 @@ private fun RequestBlockFields(
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
             colors = editorFieldColors(),
-            shape = RoundedCornerShape(6.dp),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
             value = block.postBody,
             onValueChange = { onUpdate(block.copy(postBody = it)) },
-            label = { Text("POST Body") },
+            label = { Text("Request Body") },
             minLines = 2,
             maxLines = 4,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
             colors = editorFieldColors(),
-            shape = RoundedCornerShape(6.dp),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
         )
     }
@@ -202,7 +226,7 @@ private fun RequestBlockFields(
             onCheckedChange = { onUpdate(block.copy(followRedirects = it)) },
             colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
         )
-        Text("Follow HTTP Redirects", style = MaterialTheme.typography.bodySmall, color = ObColors.TextPrimary)
+        Text("Follow HTTP Redirects", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -218,7 +242,7 @@ private fun ParseBlockFields(
                 isActive = block.mode == mode,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text(mode.label, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                Text(mode.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
             }
         }
         Spacer(Modifier.weight(1f))
@@ -230,7 +254,7 @@ private fun ParseBlockFields(
             Text(
                 text = if (block.isCapture) "CAP (Save)" else "VAR (Internal)",
                 style = MaterialTheme.typography.labelMedium,
-                color = if (block.isCapture) ObColors.StatusHitGreen else ObColors.TextSecondary
+                color = if (block.isCapture) ObTheme.colors.hit else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -243,7 +267,7 @@ private fun ParseBlockFields(
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
             colors = editorFieldColors(),
-            shape = RoundedCornerShape(6.dp),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.weight(1f)
         )
         OutlinedTextField(
@@ -253,8 +277,8 @@ private fun ParseBlockFields(
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
             colors = editorFieldColors(),
-            shape = RoundedCornerShape(6.dp),
-            modifier = Modifier.width(120.dp)
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.weight(0.55f)
         )
     }
 
@@ -266,14 +290,14 @@ private fun ParseBlockFields(
                 when (block.mode) {
                     ParseMode.LR -> "Left Delimiter"
                     ParseMode.REGEX -> "Regex Pattern"
-                    ParseMode.JSON -> "JSON Path (e.g. data.plan)"
+                    ParseMode.JSON -> "JSON Path (e.g. data.plan or items[0].id)"
                 }
             )
         },
         singleLine = true,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     )
 
@@ -285,7 +309,7 @@ private fun ParseBlockFields(
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
             colors = editorFieldColors(),
-            shape = RoundedCornerShape(6.dp),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
         )
     }
@@ -296,50 +320,107 @@ private fun KeyCheckBlockFields(
     block: ConfigBlock.KeyCheckBlock,
     onUpdate: (ConfigBlock) -> Unit
 ) {
-    val joiner = ", "
+    KeyChainFieldEditor(
+        blockId = block.id,
+        label = "Success Keys (comma-separated -> HIT)",
+        keys = block.successKeys,
+        accentColor = ObTheme.colors.hit,
+        onKeysChanged = { onUpdate(block.copy(successKeys = it)) }
+    )
+    KeyChainFieldEditor(
+        blockId = block.id,
+        label = "Custom Keys (comma-separated -> CUSTOM)",
+        keys = block.customKeys,
+        accentColor = ObTheme.colors.custom,
+        onKeysChanged = { onUpdate(block.copy(customKeys = it)) }
+    )
+    KeyChainFieldEditor(
+        blockId = block.id,
+        label = "Failure Keys (comma-separated -> BAD)",
+        keys = block.failureKeys,
+        accentColor = ObTheme.colors.bad,
+        onKeysChanged = { onUpdate(block.copy(failureKeys = it)) }
+    )
+    KeyChainFieldEditor(
+        blockId = block.id,
+        label = "Retry / Ban Keys (comma-separated -> RETRY & Rotate Proxy)",
+        keys = block.retryKeys,
+        accentColor = ObTheme.colors.retry,
+        onKeysChanged = { onUpdate(block.copy(retryKeys = it)) }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun KeyChainFieldEditor(
+    blockId: String,
+    label: String,
+    keys: List<String>,
+    accentColor: Color,
+    onKeysChanged: (List<String>) -> Unit
+) {
     fun splitKeys(raw: String): List<String> =
         raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
-    OutlinedTextField(
-        value = block.successKeys.joinToString(joiner),
-        onValueChange = { onUpdate(block.copy(successKeys = splitKeys(it))) },
-        label = { Text("Success Keys (comma-separated -> HIT)") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-        colors = editorFieldColors(ObColors.StatusHitGreen),
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
-    OutlinedTextField(
-        value = block.customKeys.joinToString(joiner),
-        onValueChange = { onUpdate(block.copy(customKeys = splitKeys(it))) },
-        label = { Text("Custom Keys (comma-separated -> CUSTOM)") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-        colors = editorFieldColors(ObColors.StatusCustomOrange),
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
-    OutlinedTextField(
-        value = block.failureKeys.joinToString(joiner),
-        onValueChange = { onUpdate(block.copy(failureKeys = splitKeys(it))) },
-        label = { Text("Failure Keys (comma-separated -> BAD)") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-        colors = editorFieldColors(ObColors.StatusBadRed),
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
-    OutlinedTextField(
-        value = block.retryKeys.joinToString(joiner),
-        onValueChange = { onUpdate(block.copy(retryKeys = splitKeys(it))) },
-        label = { Text("Retry / Ban Keys (comma-separated -> RETRY & Rotate Proxy)") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-        colors = editorFieldColors(ObColors.StatusRetryYellow),
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
+    // Keep raw text buffer so typing a trailing comma never gets stripped before the next key is typed
+    var textBuffer by remember(blockId) { mutableStateOf(keys.joinToString(", ")) }
+    LaunchedEffect(keys) {
+        if (splitKeys(textBuffer) != keys) {
+            textBuffer = keys.joinToString(", ")
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = textBuffer,
+            onValueChange = { raw ->
+                textBuffer = raw
+                onKeysChanged(splitKeys(raw))
+            },
+            label = { Text(label) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+            colors = editorFieldColors(accentColor),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (keys.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                keys.forEachIndexed { idx, key ->
+                    InputChip(
+                        selected = true,
+                        onClick = {
+                            val next = keys.toMutableList().apply { removeAt(idx) }
+                            textBuffer = next.joinToString(", ")
+                            onKeysChanged(next)
+                        },
+                        label = {
+                            Text(
+                                text = key,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily)
+                            )
+                        },
+                        trailingIcon = {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Remove key",
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = InputChipDefaults.inputChipColors(
+                            selectedContainerColor = accentColor.copy(alpha = 0.14f),
+                            selectedLabelColor = accentColor,
+                            selectedTrailingIconColor = accentColor
+                        ),
+                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.45f))
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -359,7 +440,7 @@ private fun FunctionBlockFields(
                 isActive = block.functionType == fn,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                Text(fn.label, style = MaterialTheme.typography.labelSmall, color = ObColors.TextPrimary)
+                Text(fn.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
             }
         }
     }
@@ -370,7 +451,7 @@ private fun FunctionBlockFields(
         singleLine = true,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     )
     OutlinedTextField(
@@ -380,19 +461,10 @@ private fun FunctionBlockFields(
         singleLine = true,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier.fillMaxWidth()
     )
 }
 
 @Composable
-fun editorFieldColors(labelAccent: Color? = null) = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = labelAccent ?: MaterialTheme.colorScheme.primary,
-    unfocusedBorderColor = ObColors.BorderHairline,
-    focusedContainerColor = ObColors.SurfaceRecessed,
-    unfocusedContainerColor = ObColors.SurfaceRecessed,
-    focusedTextColor = ObColors.TextPrimary,
-    unfocusedTextColor = ObColors.TextPrimary,
-    focusedLabelColor = labelAccent ?: MaterialTheme.colorScheme.primary,
-    unfocusedLabelColor = labelAccent?.copy(alpha = 0.85f) ?: ObColors.TextSecondary
-)
+fun editorFieldColors(labelAccent: Color? = null) = obOutlinedTextFieldColors(labelAccent)

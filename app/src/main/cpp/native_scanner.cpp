@@ -115,7 +115,7 @@ Java_com_example_nativeengine_NativeScannerBridge_nativeGetEngineInfo(
     JNIEnv* env,
     jobject /* thiz */
 ) {
-    return env->NewStringUTF("NDK C++17 SIMD/Boyer-Moore Scanner Active");
+    return env->NewStringUTF("NDK C++17 Fast Scanner Active");
 }
 
 }  // extern "C"

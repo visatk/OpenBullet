@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,10 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BugReport
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,8 +41,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,12 +57,17 @@ import com.example.model.ConfigDebugResult
 import com.example.model.ConfigEditorState
 import com.example.model.ConfigEditorSubTab
 import com.example.network.ConfigTemplates
+import com.example.network.LoliScriptParser
 import com.example.ui.components.ObBorderedButton
+import com.example.ui.components.ObConfirmDialog
 import com.example.ui.components.ObPanel
+import com.example.ui.components.ObSegmentedControl
+import com.example.ui.components.ObStatusPill
 import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.ObColors
-
-import androidx.compose.material.icons.outlined.Share
+import com.example.ui.theme.ObTheme
+import com.example.ui.theme.outcomeContainerColor
+import com.example.ui.theme.outcomeTintColor
+import com.example.util.FileExportHelper
 
 @Composable
 fun ConfigEditorScreen(
@@ -74,42 +86,61 @@ fun ConfigEditorScreen(
     onRunDebug: () -> Unit,
     onExportLoli: () -> Unit,
     onSave: (loadInRunner: Boolean) -> Unit,
+    onCopyFeedback: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scroll = rememberScrollState()
+    var confirmDiscard by remember { mutableStateOf(false) }
+
+    val handleBack = {
+        if (editorState.hasUnsavedChanges) {
+            confirmDiscard = true
+        } else {
+            onBack()
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(ObColors.WorkspaceBackground)
+            .background(MaterialTheme.colorScheme.background)
+            .navigationBarsPadding()
+            .imePadding()
     ) {
         // Editor Header Strip
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(ObColors.ChromeBackground)
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             IconButton(
-                onClick = onBack,
+                onClick = handleBack,
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
                     .testTag("config_editor_back")
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Configs", tint = ObColors.TextPrimary)
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to Configs",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (editorState.isNew) "Config Maker" else "Config Editor",
+                    text = buildString {
+                        append(if (editorState.isNew) "Config Maker" else "Config Editor")
+                        if (editorState.hasUnsavedChanges) append(" • Unsaved")
+                    },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (editorState.hasUnsavedChanges) ObTheme.colors.custom else MaterialTheme.colorScheme.primary
                 )
                 Text(
                     text = editorState.name.ifBlank { "Untitled Config" },
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = ObColors.TextPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -119,18 +150,28 @@ fun ConfigEditorScreen(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 modifier = Modifier.testTag("config_editor_export_loli")
             ) {
-                Icon(Icons.Outlined.Share, contentDescription = "Export .loli", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Outlined.Share,
+                    contentDescription = "Export .loli",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
                 Spacer(Modifier.width(4.dp))
-                Text(".loli", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                Text(".loli", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
             }
             ObBorderedButton(
                 onClick = { onSave(false) },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier.testTag("config_editor_save")
             ) {
-                Icon(Icons.Outlined.Save, contentDescription = null, tint = ObColors.TextPrimary, modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Outlined.Save,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(16.dp)
+                )
                 Spacer(Modifier.width(4.dp))
-                Text("Save", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                Text("Save", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
             }
             ObBorderedButton(
                 onClick = { onSave(true) },
@@ -138,52 +179,35 @@ fun ConfigEditorScreen(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier.testTag("config_editor_save_run")
             ) {
-                Icon(Icons.Outlined.PlayArrow, contentDescription = null, tint = ObColors.StatusHitGreen, modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Outlined.PlayArrow,
+                    contentDescription = null,
+                    tint = ObTheme.colors.hit,
+                    modifier = Modifier.size(16.dp)
+                )
                 Spacer(Modifier.width(4.dp))
-                Text("Run", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                Text("Run", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
         }
-        HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+        HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
         // Sub-Tabs: Stacker | LoliScript | Debugger
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(ObColors.SurfaceTableHeader)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            ConfigEditorSubTab.entries.forEach { tab ->
-                val icon = when (tab) {
-                    ConfigEditorSubTab.STACKER -> Icons.Outlined.Layers
-                    ConfigEditorSubTab.SCRIPT -> Icons.Outlined.Code
-                    ConfigEditorSubTab.DEBUGGER -> Icons.Outlined.BugReport
-                }
-                ObBorderedButton(
-                    onClick = { onSelectSubTab(tab) },
-                    isActive = editorState.activeSubTab == tab,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("editor_tab_${tab.name.lowercase()}")
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = if (editorState.activeSubTab == tab) MaterialTheme.colorScheme.primary else ObColors.TextSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        text = tab.label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (editorState.activeSubTab == tab) ObColors.TextPrimary else ObColors.TextSecondary,
-                        maxLines = 1
-                    )
-                }
-            }
+            ObSegmentedControl(
+                options = ConfigEditorSubTab.entries,
+                selectedOption = editorState.activeSubTab,
+                labelProvider = { it.label },
+                onSelect = onSelectSubTab,
+                modifier = Modifier.fillMaxWidth(),
+                testTagPrefix = "editor_tab"
+            )
         }
-        HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+        HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
         Column(
             modifier = Modifier
@@ -194,7 +218,7 @@ fun ConfigEditorScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Metadata & Starter Presets Panel
-            ObPanel(backgroundColor = ObColors.SurfacePanel, modifier = Modifier.fillMaxWidth()) {
+            ObPanel(backgroundColor = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -203,7 +227,7 @@ fun ConfigEditorScreen(
                             label = { Text("Config Name") },
                             singleLine = true,
                             colors = editorFieldColors(),
-                            shape = RoundedCornerShape(6.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1.3f)
                         )
                         OutlinedTextField(
@@ -212,7 +236,7 @@ fun ConfigEditorScreen(
                             label = { Text("Category") },
                             singleLine = true,
                             colors = editorFieldColors(),
-                            shape = RoundedCornerShape(6.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(0.9f)
                         )
                     }
@@ -226,7 +250,7 @@ fun ConfigEditorScreen(
                             label = { Text("Author") },
                             singleLine = true,
                             colors = editorFieldColors(),
-                            shape = RoundedCornerShape(6.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
@@ -235,7 +259,7 @@ fun ConfigEditorScreen(
                             label = { Text("Wordlist Type") },
                             singleLine = true,
                             colors = editorFieldColors(),
-                            shape = RoundedCornerShape(6.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -246,18 +270,24 @@ fun ConfigEditorScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { onMetadataChange(null, null, null, null, !editorState.needsProxies) }
+                            modifier = Modifier.clickable {
+                                onMetadataChange(null, null, null, null, !editorState.needsProxies)
+                            }
                         ) {
                             Checkbox(
                                 checked = editorState.needsProxies,
                                 onCheckedChange = { onMetadataChange(null, null, null, null, it) },
                                 colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
                             )
-                            Text("Requires Proxies (DEF mode)", style = MaterialTheme.typography.bodySmall, color = ObColors.TextPrimary)
+                            Text(
+                                "Requires Proxies (DEF mode)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
 
-                    Text("Starter Templates", style = MaterialTheme.typography.labelSmall, color = ObColors.TextSecondary)
+                    Text("Starter Templates", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -290,15 +320,20 @@ fun ConfigEditorScreen(
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                 modifier = Modifier.testTag("add_block_${kind.lowercase()}")
                             ) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Outlined.Add,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(Modifier.width(4.dp))
-                                Text(kind, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                                Text(kind, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                             }
                         }
                     }
 
                     if (editorState.blocks.isEmpty()) {
-                        ObPanel(backgroundColor = ObColors.SurfaceRecessed, modifier = Modifier.fillMaxWidth()) {
+                        ObPanel(backgroundColor = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -306,8 +341,12 @@ fun ConfigEditorScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text("Stacker is empty", style = MaterialTheme.typography.titleSmall, color = ObColors.TextSecondary)
-                                Text("Add a REQUEST, PARSE, KEYCHECK, or FUNCTION block above.", style = MaterialTheme.typography.bodySmall, color = ObColors.TextMuted)
+                                Text("Stacker is empty", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                                Text(
+                                    "Add a REQUEST, PARSE, KEYCHECK, or FUNCTION block above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     } else {
@@ -326,7 +365,21 @@ fun ConfigEditorScreen(
                 }
 
                 ConfigEditorSubTab.SCRIPT -> {
-                    Text("Quick Snippets", style = MaterialTheme.typography.labelSmall, color = ObColors.TextSecondary)
+                    val parsedBlockCount = remember(editorState.rawScript) {
+                        LoliScriptParser.parseToBlocks(editorState.rawScript).size
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Quick Snippets", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ObStatusPill(
+                            text = "$parsedBlockCount parsed blocks",
+                            tintColor = if (parsedBlockCount > 0) ObTheme.colors.hit else ObTheme.colors.custom,
+                            containerColor = if (parsedBlockCount > 0) ObTheme.colors.hitContainer else ObTheme.colors.customContainer
+                        )
+                    }
                     val snippets = listOf(
                         "REQUEST GET" to "\nREQUEST GET \"https://httpbin.org/get?user=<USER>\"\nHEADER \"Accept: application/json\"",
                         "REQUEST POST" to "\nREQUEST POST \"https://httpbin.org/post\"\nCONTENT_TYPE \"application/json\"\nCONTENT \"{\\\"user\\\":\\\"<USER>\\\",\\\"pass\\\":\\\"<PASS>\\\"}\"",
@@ -358,7 +411,7 @@ fun ConfigEditorScreen(
                         minLines = 12,
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         colors = editorFieldColors(),
-                        shape = RoundedCornerShape(6.dp),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("config_raw_script_field")
@@ -366,9 +419,9 @@ fun ConfigEditorScreen(
                 }
 
                 ConfigEditorSubTab.DEBUGGER -> {
-                    ObPanel(backgroundColor = ObColors.SurfacePanel, modifier = Modifier.fillMaxWidth()) {
+                    ObPanel(backgroundColor = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Live Config Debugger", style = MaterialTheme.typography.titleSmall, color = ObColors.TextPrimary)
+                            Text("Live Config Debugger", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                             OutlinedTextField(
                                 value = editorState.testDataInput,
                                 onValueChange = { onDebugInputChange(it, null) },
@@ -376,7 +429,7 @@ fun ConfigEditorScreen(
                                 singleLine = true,
                                 textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                                 colors = editorFieldColors(),
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Row(
@@ -396,49 +449,75 @@ fun ConfigEditorScreen(
                                     Text(
                                         text = "Use Proxy ($usableProxyCount usable)",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = ObColors.TextPrimary
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
 
                                 ObBorderedButton(
                                     onClick = onRunDebug,
                                     isActive = true,
+                                    enabled = !editorState.isDebugging,
                                     modifier = Modifier.testTag("config_debug_run_button")
                                 ) {
                                     if (editorState.isDebugging) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
                                     } else {
-                                        Icon(Icons.Outlined.BugReport, contentDescription = null, tint = ObColors.StatusHitGreen, modifier = Modifier.size(16.dp))
+                                        Icon(
+                                            Icons.Outlined.BugReport,
+                                            contentDescription = null,
+                                            tint = ObTheme.colors.hit,
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                     }
                                     Spacer(Modifier.width(6.dp))
-                                    Text(if (editorState.isDebugging) "Testing..." else "Test Config", style = MaterialTheme.typography.labelLarge, color = ObColors.TextPrimary)
+                                    Text(
+                                        if (editorState.isDebugging) "Testing..." else "Test Config",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
                                 }
                             }
                         }
                     }
 
                     editorState.debugResult?.let { result ->
-                        DebugResultPanel(result = result)
+                        DebugResultPanel(result = result, onCopyFeedback = onCopyFeedback)
                     }
                 }
             }
             Spacer(Modifier.height(16.dp))
         }
     }
+
+    if (confirmDiscard) {
+        ObConfirmDialog(
+            title = "Discard Unsaved Changes?",
+            message = "You have modified '${editorState.name.ifBlank { "Untitled Config" }}'. Leave without saving?",
+            confirmLabel = "Discard",
+            onConfirm = {
+                confirmDiscard = false
+                onBack()
+            },
+            onDismiss = { confirmDiscard = false }
+        )
+    }
 }
 
 @Composable
-private fun DebugResultPanel(result: ConfigDebugResult) {
-    val outcomeColor = when (result.outcomeType) {
-        "HIT" -> ObColors.StatusHitGreen
-        "CUSTOM" -> ObColors.StatusCustomOrange
-        "BAD" -> ObColors.StatusBadRed
-        "RETRY" -> ObColors.StatusRetryYellow
-        else -> ObColors.StatusToCheckAqua
-    }
+private fun DebugResultPanel(
+    result: ConfigDebugResult,
+    onCopyFeedback: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val outcomeColor = outcomeTintColor(result.outcomeType)
+    val outcomeBg = outcomeContainerColor(result.outcomeType)
 
     ObPanel(
-        backgroundColor = ObColors.SurfaceRecessed,
+        backgroundColor = MaterialTheme.colorScheme.surfaceContainerLow,
         borderColor = outcomeColor.copy(alpha = 0.65f),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -449,8 +528,8 @@ private fun DebugResultPanel(result: ConfigDebugResult) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = outcomeColor.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(6.dp),
+                    color = outcomeBg,
                     border = BorderStroke(1.dp, outcomeColor)
                 ) {
                     Text(
@@ -466,46 +545,85 @@ private fun DebugResultPanel(result: ConfigDebugResult) {
                 Text(
                     text = "${result.latencyMs}ms • Proxy: ${result.proxyUsed}",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                    color = ObColors.TextSecondary
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             if (result.captures.isNotEmpty()) {
-                Text("Captures (CAP)", style = MaterialTheme.typography.labelSmall, color = ObColors.StatusHitGreen)
+                Text("Captures (CAP)", style = MaterialTheme.typography.labelSmall, color = ObTheme.colors.hit)
                 result.captures.forEach { (k, v) ->
                     Text(
                         text = "$k = $v",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        color = ObColors.TextPrimary
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
+            if (result.variables.isNotEmpty()) {
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                Text("Variables (VAR)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                result.variables.entries
+                    .filter { it.key != "SOURCE" || it.value.isNotEmpty() }
+                    .forEach { (k, v) ->
+                        val displayVal = if (k == "SOURCE") "${v.take(60)} (${v.length} chars)" else v.take(120)
+                        Text(
+                            text = "<$k> = $displayVal",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+            }
+
             if (result.traceLogs.isNotEmpty()) {
-                HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
                 Text("Execution Trace", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 result.traceLogs.forEach { log ->
                     Text(
                         text = log,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        color = ObColors.TextSecondary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
             if (result.responseBodyPreview.isNotBlank()) {
-                HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
-                Text("Response Body Preview", style = MaterialTheme.typography.labelSmall, color = ObColors.TextSecondary)
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Response Body Preview",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    IconButton(
+                        onClick = {
+                            FileExportHelper.copyToClipboard(context, "Debug Response", result.responseBodyPreview)
+                            onCopyFeedback("Copied response preview")
+                        },
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = "Copy response preview",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(ObColors.ChromeBackground, RoundedCornerShape(6.dp))
+                        .background(ObTheme.colors.codeBackground, RoundedCornerShape(8.dp))
                         .padding(8.dp)
                 ) {
                     Text(
                         text = result.responseBodyPreview.take(900),
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        color = ObColors.TextPrimary
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }

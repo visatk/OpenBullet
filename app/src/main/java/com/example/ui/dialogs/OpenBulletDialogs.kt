@@ -13,24 +13,27 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,16 +46,22 @@ import com.example.model.ActiveDialog
 import com.example.model.ConfigItem
 import com.example.model.ProxyProtocol
 import com.example.model.WordlistItem
-import com.example.ui.components.ObBorderedButton
-import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.ObColors
-
 import com.example.network.ConfigFileCodec
+import com.example.ui.components.ObBorderedButton
+import com.example.ui.components.ObStatusPill
+import com.example.ui.components.obOutlinedTextFieldColors
+import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.ObTheme
+import com.example.ui.theme.containerColor
+import com.example.ui.theme.tintColor
+import com.example.util.FileExportHelper
+import kotlinx.coroutines.launch
 
 @Composable
 fun OpenBulletDialogHost(
     activeDialog: ActiveDialog,
     currentStartLine: Int,
+    maxStartLine: Int,
     currentBotsCount: Int,
     configs: List<ConfigItem>,
     wordlists: List<WordlistItem>,
@@ -68,15 +77,17 @@ fun OpenBulletDialogHost(
     onImportConfigFromUrl: (url: String) -> Unit,
     onCreateWordlist: (name: String, type: String, purpose: String, rawText: String) -> Unit,
     onImportProxies: (rawText: String, protocol: ProxyProtocol) -> Unit,
-    onImportProxiesFromUrl: (url: String, protocol: ProxyProtocol) -> Unit
+    onImportProxiesFromUrl: (url: String, protocol: ProxyProtocol) -> Unit,
+    onShowMessage: (String) -> Unit = {}
 ) {
     when (activeDialog) {
         ActiveDialog.None -> Unit
         ActiveDialog.EditStartLine -> {
+            val safeMax = maxStartLine.coerceAtLeast(1)
             NumericParameterDialog(
-                title = "Set Start Line (1 – 1000)",
-                initialValue = currentStartLine,
-                range = 1..1000,
+                title = "Set Start Line (1 – $safeMax)",
+                initialValue = currentStartLine.coerceIn(1, safeMax),
+                range = 1..safeMax,
                 onDismiss = onDismiss,
                 onConfirm = {
                     onUpdateStartLine(it)
@@ -101,11 +112,7 @@ fun OpenBulletDialogHost(
         is ActiveDialog.InspectResult -> {
             val context = LocalContext.current
             val row = activeDialog.row
-            val accentColor = when (row.category) {
-                com.example.model.ResultTab.HITS -> ObColors.StatusHitGreen
-                com.example.model.ResultTab.CUSTOM -> ObColors.StatusCustomOrange
-                com.example.model.ResultTab.TO_CHECK -> ObColors.StatusToCheckAqua
-            }
+            val accentColor = row.category.tintColor()
             ObDialogFrame(title = "Result Inspector (${row.category.label})", onDismiss = onDismiss) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -116,7 +123,7 @@ fun OpenBulletDialogHost(
                         Text(
                             text = "Time: ${row.time}",
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = ObColors.TextSecondary
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
                             text = "Proxy: ${row.proxy}",
@@ -131,8 +138,8 @@ fun OpenBulletDialogHost(
                         label = { Text("Combo / Input Data") },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        colors = dialogFieldColors(),
-                        shape = RoundedCornerShape(6.dp),
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -146,8 +153,8 @@ fun OpenBulletDialogHost(
                             fontFamily = JetBrainsMonoFontFamily,
                             color = accentColor
                         ),
-                        colors = dialogFieldColors(),
-                        shape = RoundedCornerShape(6.dp),
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -157,21 +164,102 @@ fun OpenBulletDialogHost(
                 ) {
                     ObBorderedButton(
                         onClick = {
-                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                            cm?.setPrimaryClip(
-                                android.content.ClipData.newPlainText(
-                                    "OpenBullet Result",
-                                    "${row.data} | ${row.capturedData}"
-                                )
+                            FileExportHelper.copyToClipboard(
+                                context,
+                                "OpenBullet Result",
+                                "${row.data} | ${row.capturedData}"
                             )
+                            onShowMessage("Copied result to clipboard")
                             onDismiss()
                         },
                         isActive = true
                     ) {
-                        Text("Copy Combo & Captures", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            "Copy Combo & Captures",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                     ObBorderedButton(onClick = onDismiss) {
-                        Text("Close", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        Text("Close", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+            }
+        }
+
+        is ActiveDialog.InspectHit -> {
+            val context = LocalContext.current
+            val hit = activeDialog.hit
+            val accentColor = hit.type.tintColor()
+            ObDialogFrame(title = "Hit Details", onDismiss = onDismiss) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ObStatusPill(
+                        text = hit.type.label,
+                        tintColor = accentColor,
+                        containerColor = hit.type.containerColor(),
+                        showDot = true
+                    )
+                    Text(
+                        text = hit.date,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = "Config: ${hit.configName} • List: ${hit.wordlistName}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = hit.data,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Combo Data") },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = hit.capturedData,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Captured Data") },
+                    minLines = 3,
+                    maxLines = 6,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = JetBrainsMonoFontFamily,
+                        color = accentColor
+                    ),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                ) {
+                    ObBorderedButton(
+                        onClick = {
+                            FileExportHelper.copyToClipboard(
+                                context,
+                                "OpenBullet Hit",
+                                "${hit.data} | ${hit.capturedData}"
+                            )
+                            onShowMessage("Copied ${hit.data}")
+                            onDismiss()
+                        },
+                        isActive = true
+                    ) {
+                        Text("Copy Hit", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Close", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -183,28 +271,31 @@ fun OpenBulletDialogHost(
                     Text(
                         text = "No configs available yet. Create one to load it into the Runner.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ObColors.TextSecondary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 220.dp)
-                            .border(1.dp, ObColors.BorderHairline, RoundedCornerShape(6.dp))
-                            .background(ObColors.SurfaceRecessed, RoundedCornerShape(6.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest, RoundedCornerShape(8.dp))
                     ) {
                         items(configs, key = { it.id }) { cfg ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onSelectConfig(cfg) }
+                                    .clickable {
+                                        onSelectConfig(cfg)
+                                        onDismiss()
+                                    }
                                     .padding(horizontal = 12.dp, vertical = 12.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(cfg.name, style = MaterialTheme.typography.bodyMedium, color = ObColors.TextPrimary)
+                                Text(cfg.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
                                 Text(cfg.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             }
-                            HorizontalDivider(thickness = 0.5.dp, color = ObColors.DividerSubtle)
+                            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
                 }
@@ -212,14 +303,19 @@ fun OpenBulletDialogHost(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                 ) {
-                    ObBorderedButton(onClick = { onSelectConfig(null) }) {
-                        Text("Clear", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+                    ObBorderedButton(
+                        onClick = {
+                            onSelectConfig(null)
+                            onDismiss()
+                        }
+                    ) {
+                        Text("Clear", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     ObBorderedButton(onClick = onOpenNewConfigDialog) {
-                        Text("Open Config Maker", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("Config Maker", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     ObBorderedButton(onClick = onDismiss) {
-                        Text("Close", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        Text("Close", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -231,28 +327,35 @@ fun OpenBulletDialogHost(
                     Text(
                         text = "No wordlists loaded yet. Import a .txt file or paste lines.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ObColors.TextSecondary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 220.dp)
-                            .border(1.dp, ObColors.BorderHairline, RoundedCornerShape(6.dp))
-                            .background(ObColors.SurfaceRecessed, RoundedCornerShape(6.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest, RoundedCornerShape(8.dp))
                     ) {
                         items(wordlists, key = { it.id }) { list ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onSelectWordlist(list) }
+                                    .clickable {
+                                        onSelectWordlist(list)
+                                        onDismiss()
+                                    }
                                     .padding(horizontal = 12.dp, vertical = 12.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(list.name, style = MaterialTheme.typography.bodyMedium, color = ObColors.TextPrimary)
-                                Text("${list.lineCount} lines", style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily), color = MaterialTheme.colorScheme.primary)
+                                Text(list.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                                Text(
+                                    "${list.lineCount} lines",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                             }
-                            HorizontalDivider(thickness = 0.5.dp, color = ObColors.DividerSubtle)
+                            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
                 }
@@ -260,14 +363,19 @@ fun OpenBulletDialogHost(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                 ) {
-                    ObBorderedButton(onClick = { onSelectWordlist(null) }) {
-                        Text("Clear", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+                    ObBorderedButton(
+                        onClick = {
+                            onSelectWordlist(null)
+                            onDismiss()
+                        }
+                    ) {
+                        Text("Clear", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     ObBorderedButton(onClick = onOpenAddWordlistDialog) {
                         Text("Add List", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     ObBorderedButton(onClick = onDismiss) {
-                        Text("Close", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        Text("Close", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -281,20 +389,67 @@ fun OpenBulletDialogHost(
             var script by remember { mutableStateOf("") }
 
             ObDialogFrame(title = "Create Config", onDismiss = onDismiss) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Config Name") }, singleLine = true, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Config Name") },
+                    singleLine = true,
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = author, onValueChange = { author = it }, label = { Text("Author") }, singleLine = true, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.weight(1f))
-                    OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("Category") }, singleLine = true, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = author,
+                        onValueChange = { author = it },
+                        label = { Text("Author") },
+                        singleLine = true,
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = { category = it },
+                        label = { Text("Category") },
+                        singleLine = true,
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { needsProxies = !needsProxies }) {
-                    Checkbox(checked = needsProxies, onCheckedChange = { needsProxies = it }, colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary))
-                    Text("Needs Proxies (DEF mode)", style = MaterialTheme.typography.bodySmall, color = ObColors.TextPrimary)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { needsProxies = !needsProxies }
+                ) {
+                    Checkbox(
+                        checked = needsProxies,
+                        onCheckedChange = { needsProxies = it },
+                        colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+                    )
+                    Text("Needs Proxies (DEF mode)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                 }
-                OutlinedTextField(value = script, onValueChange = { script = it }, label = { Text("LoliScript Notes (optional)") }, minLines = 3, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = script,
+                    onValueChange = { script = it },
+                    label = { Text("LoliScript Notes (optional)") },
+                    minLines = 3,
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                    ObBorderedButton(onClick = onDismiss) { Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary) }
-                    ObBorderedButton(onClick = { onCreateConfig(name, author, category, "Default", needsProxies, script) }) {
-                        Text("Save", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    ObBorderedButton(
+                        onClick = {
+                            onCreateConfig(name, author, category, "Default", needsProxies, script)
+                            onDismiss()
+                        },
+                        isActive = true
+                    ) {
+                        Text("Save", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
@@ -302,19 +457,19 @@ fun OpenBulletDialogHost(
 
         ActiveDialog.ImportConfig -> {
             val context = LocalContext.current
+            val scope = rememberCoroutineScope()
             var fallbackName by remember { mutableStateOf("") }
             var remoteUrl by remember { mutableStateOf("") }
             var payloadText by remember { mutableStateOf("") }
 
             val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
                 if (uri != null) {
-                    val content = runCatching {
-                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    }.getOrNull().orEmpty()
-                    if (content.isNotEmpty()) {
-                        payloadText = content
-                        if (fallbackName.isBlank()) {
-                            fallbackName = uri.lastPathSegment?.substringAfterLast('/') ?: "imported_config.loli"
+                    scope.launch {
+                        val loaded = FileExportHelper.readTextFromUri(context, uri, "imported_config.loli")
+                        if (loaded != null) {
+                            val (fileName, content) = loaded
+                            payloadText = content
+                            if (fallbackName.isBlank()) fallbackName = fileName
                         }
                     }
                 }
@@ -334,7 +489,7 @@ fun OpenBulletDialogHost(
                     Text(
                         text = "Format: $detectedFormat",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        color = ObColors.StatusHitGreen
+                        color = ObTheme.colors.hit
                     )
                 }
                 OutlinedTextField(
@@ -342,8 +497,8 @@ fun OpenBulletDialogHost(
                     onValueChange = { fallbackName = it },
                     label = { Text("Fallback Name (if not in file)") },
                     singleLine = true,
-                    colors = dialogFieldColors(),
-                    shape = RoundedCornerShape(6.dp),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -352,11 +507,16 @@ fun OpenBulletDialogHost(
                         onValueChange = { remoteUrl = it },
                         label = { Text("Remote .loli / .json URL (optional)") },
                         singleLine = true,
-                        colors = dialogFieldColors(),
-                        shape = RoundedCornerShape(6.dp),
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f)
                     )
-                    ObBorderedButton(onClick = { onImportConfigFromUrl(remoteUrl) }) {
+                    ObBorderedButton(
+                        onClick = {
+                            onImportConfigFromUrl(remoteUrl)
+                            onDismiss()
+                        }
+                    ) {
                         Text("Fetch", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -367,36 +527,30 @@ fun OpenBulletDialogHost(
                     minLines = 5,
                     maxLines = 8,
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                    colors = dialogFieldColors(),
-                    shape = RoundedCornerShape(6.dp),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                     ObBorderedButton(onClick = onDismiss) {
-                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     ObBorderedButton(
                         onClick = {
-                            onImportConfigPayload(
-                                payloadText,
-                                fallbackName.ifBlank { "Imported Config" },
-                                true
-                            )
+                            onImportConfigPayload(payloadText, fallbackName.ifBlank { "Imported Config" }, true)
+                            onDismiss()
                         }
                     ) {
-                        Text("Import & Edit", style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                        Text("Import & Edit", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                     ObBorderedButton(
                         onClick = {
-                            onImportConfigPayload(
-                                payloadText,
-                                fallbackName.ifBlank { "Imported Config" },
-                                false
-                            )
+                            onImportConfigPayload(payloadText, fallbackName.ifBlank { "Imported Config" }, false)
+                            onDismiss()
                         },
                         isActive = true
                     ) {
-                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
@@ -404,18 +558,18 @@ fun OpenBulletDialogHost(
 
         ActiveDialog.AddWordlist -> {
             val context = LocalContext.current
+            val scope = rememberCoroutineScope()
             var name by remember { mutableStateOf("") }
             var type by remember { mutableStateOf("Default") }
             var linesText by remember { mutableStateOf("") }
             val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
                 if (uri != null) {
-                    val content = runCatching {
-                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    }.getOrNull().orEmpty()
-                    if (content.isNotEmpty()) {
-                        linesText = content
-                        if (name.isBlank()) {
-                            name = uri.lastPathSegment?.substringAfterLast('/') ?: "imported.txt"
+                    scope.launch {
+                        val loaded = FileExportHelper.readTextFromUri(context, uri, "imported.txt")
+                        if (loaded != null) {
+                            val (fileName, content) = loaded
+                            linesText = content
+                            if (name.isBlank()) name = fileName
                         }
                     }
                 }
@@ -423,8 +577,24 @@ fun OpenBulletDialogHost(
 
             ObDialogFrame(title = "Add Wordlist", onDismiss = onDismiss) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Wordlist Name") }, singleLine = true, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.weight(1f))
-                    OutlinedTextField(value = type, onValueChange = { type = it }, label = { Text("Type") }, singleLine = true, colors = dialogFieldColors(), shape = RoundedCornerShape(6.dp), modifier = Modifier.width(120.dp))
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Wordlist Name") },
+                        singleLine = true,
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = type,
+                        onValueChange = { type = it },
+                        label = { Text("Type") },
+                        singleLine = true,
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.width(120.dp)
+                    )
                 }
                 ObBorderedButton(onClick = { filePicker.launch(arrayOf("text/plain", "*/*")) }) {
                     Text("Pick .txt File", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -435,23 +605,44 @@ fun OpenBulletDialogHost(
                     label = { Text("Paste lines (one per line)") },
                     minLines = 4,
                     maxLines = 6,
-                    colors = dialogFieldColors(),
-                    shape = RoundedCornerShape(6.dp),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                    ObBorderedButton(onClick = onDismiss) { Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary) }
-                    ObBorderedButton(onClick = { onCreateWordlist(name, type, "Runner", linesText) }) {
-                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    ObBorderedButton(
+                        onClick = {
+                            onCreateWordlist(name, type, "Runner", linesText)
+                            onDismiss()
+                        },
+                        isActive = true
+                    ) {
+                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
         }
 
         ActiveDialog.AddProxies -> {
+            val context = LocalContext.current
+            val scope = rememberCoroutineScope()
             var protocol by remember { mutableStateOf(ProxyProtocol.HTTP) }
             var rawText by remember { mutableStateOf("") }
             var remoteUrl by remember { mutableStateOf("") }
+
+            val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+                if (uri != null) {
+                    scope.launch {
+                        val loaded = FileExportHelper.readTextFromUri(context, uri, "proxies.txt")
+                        if (loaded != null) {
+                            rawText = loaded.second
+                        }
+                    }
+                }
+            }
 
             ObDialogFrame(title = "Import Proxies", onDismiss = onDismiss) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -461,9 +652,12 @@ fun OpenBulletDialogHost(
                             isActive = protocol == p,
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text(p.label, style = MaterialTheme.typography.labelMedium, color = ObColors.TextPrimary)
+                            Text(p.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                         }
                     }
+                }
+                ObBorderedButton(onClick = { filePicker.launch(arrayOf("text/plain", "*/*")) }) {
+                    Text("Pick .txt Proxy File", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
@@ -471,28 +665,41 @@ fun OpenBulletDialogHost(
                         onValueChange = { remoteUrl = it },
                         label = { Text("Remote List URL (optional)") },
                         singleLine = true,
-                        colors = dialogFieldColors(),
-                        shape = RoundedCornerShape(6.dp),
+                        colors = obOutlinedTextFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f)
                     )
-                    ObBorderedButton(onClick = { onImportProxiesFromUrl(remoteUrl, protocol) }) {
+                    ObBorderedButton(
+                        onClick = {
+                            onImportProxiesFromUrl(remoteUrl, protocol)
+                            onDismiss()
+                        }
+                    ) {
                         Text("Fetch", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 OutlinedTextField(
                     value = rawText,
                     onValueChange = { rawText = it },
-                    label = { Text("host:port (one per line)") },
+                    label = { Text("host:port or socks5://host:port (one per line)") },
                     minLines = 4,
                     maxLines = 6,
-                    colors = dialogFieldColors(),
-                    shape = RoundedCornerShape(6.dp),
+                    colors = obOutlinedTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                    ObBorderedButton(onClick = onDismiss) { Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary) }
-                    ObBorderedButton(onClick = { onImportProxies(rawText, protocol) }) {
-                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    ObBorderedButton(onClick = onDismiss) {
+                        Text("Cancel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    ObBorderedButton(
+                        onClick = {
+                            onImportProxies(rawText, protocol)
+                            onDismiss()
+                        },
+                        isActive = true
+                    ) {
+                        Text("Import", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
@@ -515,19 +722,22 @@ private fun NumericParameterDialog(
             onValueChange = { input -> text = input.filter { it.isDigit() } },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            colors = dialogFieldColors(),
-            shape = RoundedCornerShape(6.dp),
+            colors = obOutlinedTextFieldColors(),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
             ObBorderedButton(onClick = onDismiss) {
-                Text("Cancel", style = MaterialTheme.typography.labelMedium, color = ObColors.TextSecondary)
+                Text("Cancel", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            ObBorderedButton(onClick = {
-                val parsed = text.toIntOrNull()?.coerceIn(range) ?: initialValue
-                onConfirm(parsed)
-            }) {
-                Text("Apply", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            ObBorderedButton(
+                onClick = {
+                    val parsed = text.toIntOrNull()?.coerceIn(range) ?: initialValue
+                    onConfirm(parsed)
+                },
+                isActive = true
+            ) {
+                Text("Apply", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
         }
     }
@@ -541,37 +751,27 @@ private fun ObDialogFrame(
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = ObColors.SurfacePanel,
-            border = BorderStroke(1.dp, ObColors.BorderBright),
-            tonalElevation = 6.dp
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            tonalElevation = 6.dp,
+            modifier = Modifier.imePadding()
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = ObColors.TextPrimary
+                    color = MaterialTheme.colorScheme.onSurface
                 )
-                HorizontalDivider(thickness = 1.dp, color = ObColors.DividerSubtle)
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
                 content()
             }
         }
     }
 }
-
-@Composable
-private fun dialogFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = MaterialTheme.colorScheme.primary,
-    unfocusedBorderColor = ObColors.BorderHairline,
-    focusedContainerColor = ObColors.SurfaceRecessed,
-    unfocusedContainerColor = ObColors.SurfaceRecessed,
-    focusedTextColor = ObColors.TextPrimary,
-    unfocusedTextColor = ObColors.TextPrimary,
-    focusedLabelColor = MaterialTheme.colorScheme.primary,
-    unfocusedLabelColor = ObColors.TextSecondary
-)

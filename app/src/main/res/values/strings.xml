@@ -40,7 +40,7 @@
     <string name="btn_select_list">Select List</string>
     <string name="value_none">None</string>
     <string name="btn_back">Back</string>
-    <string name="log_initialized">Runner initialized succesfully!</string>
+    <string name="log_initialized">Runner initialized successfully!</string>
 
     <string name="stats_data_header">DATA</string>
     <string name="stats_proxies_header">PROXIES</string>

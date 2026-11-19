@@ -1,12 +1,10 @@
 package com.example.network
 
 import com.example.model.ConfigItem
+import com.example.util.DateTimeFormats
 import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 
 enum class ConfigExportFormat(val extension: String, val label: String) {
@@ -247,6 +245,5 @@ object ConfigFileCodec {
         return stripped.ifEmpty { defaultName }
     }
 
-    private fun todayString(): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private fun todayString(): String = DateTimeFormats.formatDateNow()
 }

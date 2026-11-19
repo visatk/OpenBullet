@@ -2,45 +2,60 @@ package com.example.viewmodel
 
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.PowerManager
 import android.provider.Settings
+import com.example.model.ProxyItem
 import com.example.model.ProxyStatus
 import com.example.model.ResultRow
 import com.example.model.ResultTab
 import com.example.model.WorkerRow
-import com.example.ui.theme.ObColors
 
 object RunnerPacketHelper {
 
+    private const val RECORD_SEP = "\u001E"
+    private const val FIELD_SEP = "\u001F"
+
+    fun packWithByteBudget(
+        entries: Iterable<String>,
+        maxBytes: Int,
+        separator: String = RECORD_SEP
+    ): String {
+        if (maxBytes <= 0) return ""
+        val sepBytes = separator.toByteArray(Charsets.UTF_8).size
+        val out = StringBuilder()
+        var currentBytes = 0
+        for (entry in entries) {
+            if (entry.isEmpty()) continue
+            val entryBytes = entry.toByteArray(Charsets.UTF_8).size
+            val needed = if (out.isEmpty()) entryBytes else sepBytes + entryBytes
+            if (currentBytes + needed > maxBytes) break
+            if (out.isNotEmpty()) out.append(separator)
+            out.append(entry)
+            currentBytes += needed
+        }
+        return out.toString()
+    }
+
     fun unpackWorkers(packed: String): List<WorkerRow> {
         if (packed.isBlank()) return emptyList()
-        return packed.split("\u001E").mapNotNull { entry ->
-            val parts = entry.split("\u001F")
+        return packed.split(RECORD_SEP).mapNotNull { entry ->
+            val parts = entry.split(FIELD_SEP)
             if (parts.size < 5) return@mapNotNull null
             val id = parts[0].toIntOrNull() ?: return@mapNotNull null
-            val color = when (parts[4]) {
-                "HIT" -> ObColors.StatusHitGreen
-                "CUSTOM" -> ObColors.StatusCustomOrange
-                "BAD" -> ObColors.StatusBadRed
-                "RETRY" -> ObColors.StatusRetryYellow
-                else -> ObColors.StatusToCheckAqua
-            }
             WorkerRow(
                 id = id,
                 data = parts[1],
                 proxy = parts[2],
                 status = parts[3],
-                statusColor = color
+                outcomeType = parts[4]
             )
         }
     }
 
     fun unpackResults(packed: String): List<ResultRow> {
         if (packed.isBlank()) return emptyList()
-        return packed.split("\u001E").mapNotNull { entry ->
-            val parts = entry.split("\u001F")
+        return packed.split(RECORD_SEP).mapNotNull { entry ->
+            val parts = entry.split(FIELD_SEP)
             if (parts.size < 5) return@mapNotNull null
             val cat = runCatching { ResultTab.valueOf(parts[4]) }.getOrDefault(ResultTab.TO_CHECK)
             ResultRow(
@@ -50,14 +65,6 @@ object RunnerPacketHelper {
                 capturedData = parts[3],
                 category = cat
             )
-        }
-    }
-
-    fun playAlertTone(isHit: Boolean) {
-        runCatching {
-            val tone = if (isHit) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_BEEP2
-            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 70)
-            tg.startTone(tone, if (isHit) 140 else 220)
         }
     }
 
@@ -75,7 +82,7 @@ object RunnerPacketHelper {
         }
     }
 
-    fun chooseDebugProxy(proxies: List<com.example.model.ProxyItem>): com.example.model.ProxyItem? {
+    fun chooseDebugProxy(proxies: List<ProxyItem>): ProxyItem? {
         return proxies.firstOrNull { it.status == ProxyStatus.AVAILABLE }
             ?: proxies.firstOrNull { it.status == ProxyStatus.UNTESTED }
     }

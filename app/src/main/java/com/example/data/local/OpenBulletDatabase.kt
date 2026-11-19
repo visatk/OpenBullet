@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -14,7 +16,7 @@ import androidx.room.RoomDatabase
         SettingsEntity::class,
         RunnerSessionEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class OpenBulletDatabase : RoomDatabase() {
@@ -29,6 +31,23 @@ abstract class OpenBulletDatabase : RoomDatabase() {
         @Volatile
         private var instance: OpenBulletDatabase? = null
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE app_settings ADD COLUMN themeMode TEXT NOT NULL DEFAULT 'DARK'"
+                )
+                db.execSQL(
+                    "ALTER TABLE app_settings ADD COLUMN useDynamicColor INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_proxies_status ON proxies (status)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_proxies_protocol ON proxies (protocol)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_proxies_createdAt ON proxies (createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_hits_db_type ON hits_db (type)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_hits_db_createdAt ON hits_db (createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_configs_createdAt ON configs (createdAt)")
+            }
+        }
+
         fun getInstance(context: Context): OpenBulletDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -36,7 +55,8 @@ abstract class OpenBulletDatabase : RoomDatabase() {
                     OpenBulletDatabase::class.java,
                     "openbullet_workstation.db"
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .addMigrations(MIGRATION_2_3)
+                    .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }
             }

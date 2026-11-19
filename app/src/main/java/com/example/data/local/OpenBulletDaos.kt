@@ -4,7 +4,15 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
+
+data class ProxyCheckUpdate(
+    val id: String,
+    val status: String,
+    val pingMs: Int?,
+    val country: String
+)
 
 @Dao
 interface ConfigDao {
@@ -16,6 +24,9 @@ interface ConfigDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: ConfigEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(entities: List<ConfigEntity>)
 
     @Query("DELETE FROM configs WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -52,6 +63,18 @@ interface ProxyDao {
 
     @Query("UPDATE proxies SET status = :status, pingMs = :pingMs, country = :country WHERE id = :id")
     suspend fun updateCheckResult(id: String, status: String, pingMs: Int?, country: String)
+
+    @Transaction
+    suspend fun updateCheckResultsBatch(updates: List<ProxyCheckUpdate>) {
+        for (update in updates) {
+            updateCheckResult(
+                id = update.id,
+                status = update.status,
+                pingMs = update.pingMs,
+                country = update.country
+            )
+        }
+    }
 
     @Query("DELETE FROM proxies WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -103,4 +126,7 @@ interface RunnerSessionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: RunnerSessionEntity)
+
+    @Query("DELETE FROM runner_session")
+    suspend fun clearSession()
 }

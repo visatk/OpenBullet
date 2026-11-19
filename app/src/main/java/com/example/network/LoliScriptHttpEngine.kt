@@ -100,7 +100,7 @@ object ConfigTemplates {
 }
 
 object LoliScriptParser {
-    private val requestRegex = Regex("""REQUEST\s+(GET|POST|PUT|DELETE|HEAD)\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
+    private val requestRegex = Regex("""REQUEST\s+(GET|POST|PUT|PATCH|DELETE|HEAD)\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val headerRegex = Regex("""HEADER\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val contentTypeRegex = Regex("""CONTENT_TYPE\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val contentRegex = Regex("""CONTENT\s+"((?:\\.|[^"\\])*)"""", RegexOption.IGNORE_CASE)
@@ -368,7 +368,10 @@ object LoliScriptParser {
                             .forEach { headerLine ->
                                 appendLine("HEADER \"${escape(headerLine)}\"")
                             }
-                        if (block.method.uppercase() in setOf("POST", "PUT")) {
+                        val upperMethod = block.method.uppercase()
+                        if (upperMethod in setOf("POST", "PUT", "PATCH") ||
+                            (upperMethod == "DELETE" && block.postBody.isNotBlank())
+                        ) {
                             if (block.contentType.isNotBlank()) {
                                 appendLine("CONTENT_TYPE \"${escape(block.contentType.trim())}\"")
                             }
@@ -441,6 +444,26 @@ object HttpExecutionEngine {
         Moshi.Builder().build().adapter(Any::class.java).lenient()
     }
 
+    private val varTokenRegex = Regex("""<([A-Za-z0-9_]+)>""")
+    private val jsonPathSegmentRegex = Regex("""([^.\[\]]+)|\[(\d+)]""")
+
+    private val regexCacheLock = Any()
+    private val regexCache = object : LinkedHashMap<String, Regex>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Regex>?): Boolean =
+            size > 64
+    }
+
+    private fun compiledRegex(pattern: String): Regex {
+        synchronized(regexCacheLock) {
+            regexCache[pattern]?.let { return it }
+        }
+        val compiled = Regex(pattern)
+        synchronized(regexCacheLock) {
+            regexCache[pattern] = compiled
+        }
+        return compiled
+    }
+
     fun executeCheck(
         rawLine: String,
         script: ParsedLoliScript,
@@ -497,11 +520,12 @@ object HttpExecutionEngine {
         proxyItem: ProxyItem?,
         collectTrace: Boolean
     ): ConfigDebugResult {
-        val analysis = NativeScannerBridge.analyzeComboLine(rawLine)
-        val variables = linkedMapOf<String, String>(
+        val trimmedInput = rawLine.trim()
+        val analysis = NativeScannerBridge.analyzeComboLine(trimmedInput)
+        val variables = linkedMapOf(
             "USER" to analysis.left,
             "PASS" to analysis.right,
-            "INPUT" to rawLine.trim(),
+            "INPUT" to trimmedInput,
             "SOURCE" to "",
             "RESPONSECODE" to "0",
             "ADDRESS" to ""
@@ -518,23 +542,48 @@ object HttpExecutionEngine {
         val hasHttpRequest = blocks.any { it is ConfigBlock.RequestBlock && it.url.isNotBlank() }
 
         if (!hasHttpRequest) {
-            // Execute any Function/Parse blocks locally, then run native structural check
-            blocks.filterIsInstance<ConfigBlock.FunctionBlock>().forEach { fn ->
-                val resolvedInput = substituteVars(fn.inputTemplate, variables, urlEncode = false)
-                val computed = runScriptFunction(fn.functionType, resolvedInput)
-                variables[fn.outputVar] = computed
-                logTrace("[FUNCTION ${fn.functionType.loliKeyword}] ${fn.outputVar}=$computed")
+            variables["SOURCE"] = trimmedInput
+            var finalOutcome: String? = null
+            var matchedKeySummary: String? = null
+
+            for ((idx, block) in blocks.withIndex()) {
+                when (block) {
+                    is ConfigBlock.FunctionBlock -> {
+                        executeFunctionBlock(idx, block, variables, ::logTrace)
+                    }
+                    is ConfigBlock.ParseBlock -> {
+                        executeParseBlock(idx, block, trimmedInput, variables, captures, ::logTrace)
+                    }
+                    is ConfigBlock.KeyCheckBlock -> {
+                        val (outcome, matched, shouldStop) = evaluateKeyCheckBlock(
+                            idx = idx,
+                            block = block,
+                            combinedSource = trimmedInput,
+                            logTrace = ::logTrace
+                        )
+                        if (outcome != null) {
+                            finalOutcome = outcome
+                            matchedKeySummary = matched
+                        }
+                        if (shouldStop) break
+                    }
+                    is ConfigBlock.RequestBlock -> Unit
+                }
             }
-            val outcome = when {
+
+            val resolvedOutcome = finalOutcome ?: when {
                 analysis.isEmailLeft && analysis.isValidPair -> "HIT"
                 analysis.isValidPair -> "CUSTOM"
                 else -> "TO_CHECK"
             }
-            captures["FNV1a"] = analysis.fnv1aHashHex.take(8)
-            logTrace("[LOCAL SCAN] Outcome=$outcome | PairValid=${analysis.isValidPair} | FNV1a=${analysis.fnv1aHashHex.take(8)}")
+            captures.putIfAbsent("FNV1a", analysis.fnv1aHashHex.take(8))
+            if (matchedKeySummary != null) {
+                captures.putIfAbsent("Key", matchedKeySummary)
+            }
+            logTrace("[LOCAL SCAN] Outcome=$resolvedOutcome | PairValid=${analysis.isValidPair} | FNV1a=${analysis.fnv1aHashHex.take(8)}")
             return ConfigDebugResult(
-                outcomeType = outcome,
-                statusLabel = if (outcome == "HIT") "VALID_PAIR" else outcome,
+                outcomeType = resolvedOutcome,
+                statusLabel = if (resolvedOutcome == "HIT") "VALID_PAIR" else resolvedOutcome,
                 httpCode = 0,
                 latencyMs = 0L,
                 proxyUsed = "Local",
@@ -556,47 +605,57 @@ object HttpExecutionEngine {
         for ((idx, block) in blocks.withIndex()) {
             when (block) {
                 is ConfigBlock.FunctionBlock -> {
-                    val resolvedInput = substituteVars(block.inputTemplate, variables, urlEncode = false)
-                    val out = runScriptFunction(block.functionType, resolvedInput)
-                    variables[block.outputVar] = out
-                    logTrace("#${idx + 1} [FUNCTION ${block.functionType.loliKeyword}] ${block.outputVar} = ${out.take(48)}")
+                    executeFunctionBlock(idx, block, variables, ::logTrace)
                 }
 
                 is ConfigBlock.RequestBlock -> {
-                    val resolvedUrl = substituteVars(block.url, variables, urlEncode = true)
+                    val resolvedUrl = substituteUrlVars(block.url, variables)
                     val resolvedBody = substituteVars(block.postBody, variables, urlEncode = false)
-                    val client = OpenBulletNetworkClient.buildClient(
-                        timeoutSec = timeoutSec,
-                        proxyItem = proxyItem,
-                        followRedirects = block.followRedirects,
-                        cookieJar = cookieJar
-                    )
-                    val reqBuilder = Request.Builder().url(resolvedUrl)
-                    var explicitContentType: String? = null
-                    block.headersText.lineSequence()
-                        .map { it.trim() }
-                        .filter { it.contains(":") }
-                        .forEach { headerLine ->
-                            val colonIdx = headerLine.indexOf(':')
-                            val k = headerLine.substring(0, colonIdx).trim()
-                            val v = substituteVars(headerLine.substring(colonIdx + 1).trim(), variables, urlEncode = false)
-                            if (k.equals("Content-Type", ignoreCase = true)) {
-                                explicitContentType = v
-                            }
-                            reqBuilder.header(k, v)
-                        }
-
-                    val mediaType = (explicitContentType ?: block.contentType.ifBlank { "application/x-www-form-urlencoded" }).toMediaType()
-                    when (block.method.uppercase()) {
-                        "POST" -> reqBuilder.post(resolvedBody.toRequestBody(mediaType))
-                        "PUT" -> reqBuilder.put(resolvedBody.toRequestBody(mediaType))
-                        "DELETE" -> reqBuilder.delete()
-                        "HEAD" -> reqBuilder.head()
-                        else -> reqBuilder.get()
-                    }
-
                     val startMs = System.currentTimeMillis()
                     val callResult = runCatching {
+                        val client = OpenBulletNetworkClient.buildClient(
+                            timeoutSec = timeoutSec,
+                            proxyItem = proxyItem,
+                            followRedirects = block.followRedirects,
+                            cookieJar = cookieJar
+                        )
+                        val reqBuilder = Request.Builder().url(resolvedUrl)
+                        var explicitContentType: String? = null
+                        block.headersText.lineSequence()
+                            .map { it.trim() }
+                            .filter { it.contains(":") }
+                            .forEach { headerLine ->
+                                val colonIdx = headerLine.indexOf(':')
+                                val k = headerLine.substring(0, colonIdx).trim()
+                                val v = substituteVars(
+                                    headerLine.substring(colonIdx + 1).trim(),
+                                    variables,
+                                    urlEncode = false
+                                )
+                                if (k.equals("Content-Type", ignoreCase = true)) {
+                                    explicitContentType = v
+                                }
+                                if (k.isNotEmpty()) {
+                                    reqBuilder.header(k, v)
+                                }
+                            }
+
+                        val rawMediaType = explicitContentType
+                            ?: block.contentType.ifBlank { "application/x-www-form-urlencoded" }
+                        val mediaType = rawMediaType.toMediaType()
+                        when (block.method.uppercase()) {
+                            "POST" -> reqBuilder.post(resolvedBody.toRequestBody(mediaType))
+                            "PUT" -> reqBuilder.put(resolvedBody.toRequestBody(mediaType))
+                            "PATCH" -> reqBuilder.patch(resolvedBody.toRequestBody(mediaType))
+                            "DELETE" -> if (resolvedBody.isNotEmpty()) {
+                                reqBuilder.delete(resolvedBody.toRequestBody(mediaType))
+                            } else {
+                                reqBuilder.delete()
+                            }
+                            "HEAD" -> reqBuilder.head()
+                            else -> reqBuilder.get()
+                        }
+
                         client.newCall(reqBuilder.build()).execute().use { resp ->
                             val elapsed = System.currentTimeMillis() - startMs
                             val bodyStr = resp.body?.string().orEmpty()
@@ -608,10 +667,12 @@ object HttpExecutionEngine {
                         val err = callResult.exceptionOrNull()
                         val elapsed = System.currentTimeMillis() - startMs
                         totalLatency += elapsed
+                        val isConfigError = err is IllegalArgumentException
+                        val failOutcome = if (isConfigError) "BAD" else "RETRY"
                         logTrace("#${idx + 1} [REQUEST ${block.method}] FAILED: ${err?.javaClass?.simpleName}: ${err?.message}")
                         return ConfigDebugResult(
-                            outcomeType = "RETRY",
-                            statusLabel = "RETRY",
+                            outcomeType = failOutcome,
+                            statusLabel = failOutcome,
                             httpCode = 0,
                             latencyMs = totalLatency,
                             proxyUsed = proxyLabel,
@@ -634,63 +695,21 @@ object HttpExecutionEngine {
                 }
 
                 is ConfigBlock.ParseBlock -> {
-                    val srcText = if (block.sourceVar.equals("<SOURCE>", ignoreCase = true) || block.sourceVar.isBlank()) {
-                        lastBody
-                    } else {
-                        substituteVars(block.sourceVar, variables, urlEncode = false)
-                    }
-                    val extracted = when (block.mode) {
-                        ParseMode.LR -> extractBetween(srcText, block.leftOrPattern, block.right)
-                        ParseMode.REGEX -> extractRegex(srcText, block.leftOrPattern)
-                        ParseMode.JSON -> extractJsonPath(srcText, block.leftOrPattern)
-                    }
-                    if (extracted != null) {
-                        variables[block.outputName] = extracted
-                        if (block.isCapture) captures[block.outputName] = extracted
-                        logTrace("#${idx + 1} [PARSE ${block.mode.label}] ${block.outputName} = $extracted")
-                    } else {
-                        logTrace("#${idx + 1} [PARSE ${block.mode.label}] ${block.outputName} -> (no match)")
-                    }
+                    executeParseBlock(idx, block, lastBody, variables, captures, ::logTrace)
                 }
 
                 is ConfigBlock.KeyCheckBlock -> {
-                    val matchedRetry = block.retryKeys.firstOrNull { key ->
-                        key.isNotBlank() && combinedSource.contains(key, ignoreCase = true)
-                    }
-                    if (matchedRetry != null) {
-                        finalOutcome = "RETRY"
-                        matchedKeySummary = "RetryKey=$matchedRetry"
-                        logTrace("#${idx + 1} [KEYCHECK] Matched RETRY key '$matchedRetry'")
-                        break
-                    }
-
-                    val (scanOutcome, matchedKey) = NativeScannerBridge.scanResponseKeys(
-                        body = combinedSource,
-                        successKeys = block.successKeys,
-                        customKeys = block.customKeys,
-                        failureKeys = block.failureKeys
+                    val (outcome, matched, shouldStop) = evaluateKeyCheckBlock(
+                        idx = idx,
+                        block = block,
+                        combinedSource = combinedSource,
+                        logTrace = ::logTrace
                     )
-                    when (scanOutcome) {
-                        KeyScanOutcome.FAIL -> {
-                            finalOutcome = "BAD"
-                            matchedKeySummary = matchedKey
-                            logTrace("#${idx + 1} [KEYCHECK] Matched FAILURE key '$matchedKey'")
-                            break
-                        }
-                        KeyScanOutcome.CUSTOM -> {
-                            finalOutcome = "CUSTOM"
-                            matchedKeySummary = matchedKey
-                            logTrace("#${idx + 1} [KEYCHECK] Matched CUSTOM key '$matchedKey'")
-                        }
-                        KeyScanOutcome.HIT -> {
-                            finalOutcome = "HIT"
-                            matchedKeySummary = matchedKey
-                            logTrace("#${idx + 1} [KEYCHECK] Matched SUCCESS key '$matchedKey'")
-                        }
-                        KeyScanOutcome.NONE -> {
-                            logTrace("#${idx + 1} [KEYCHECK] No keys matched")
-                        }
+                    if (outcome != null) {
+                        finalOutcome = outcome
+                        matchedKeySummary = matched
                     }
+                    if (shouldStop) break
                 }
             }
         }
@@ -719,15 +738,98 @@ object HttpExecutionEngine {
         )
     }
 
+    private fun executeFunctionBlock(
+        idx: Int,
+        block: ConfigBlock.FunctionBlock,
+        variables: MutableMap<String, String>,
+        logTrace: (String) -> Unit
+    ) {
+        val resolvedInput = substituteVars(block.inputTemplate, variables, urlEncode = false)
+        val out = runScriptFunction(block.functionType, resolvedInput)
+        if (block.outputVar.isNotBlank()) {
+            variables[block.outputVar] = out
+        }
+        logTrace("#${idx + 1} [FUNCTION ${block.functionType.loliKeyword}] ${block.outputVar} = ${out.take(48)}")
+    }
+
+    private fun executeParseBlock(
+        idx: Int,
+        block: ConfigBlock.ParseBlock,
+        defaultSourceBody: String,
+        variables: MutableMap<String, String>,
+        captures: MutableMap<String, String>,
+        logTrace: (String) -> Unit
+    ) {
+        val srcText = if (block.sourceVar.equals("<SOURCE>", ignoreCase = true) || block.sourceVar.isBlank()) {
+            defaultSourceBody
+        } else {
+            substituteVars(block.sourceVar, variables, urlEncode = false)
+        }
+        val extracted = when (block.mode) {
+            ParseMode.LR -> extractBetween(srcText, block.leftOrPattern, block.right)
+            ParseMode.REGEX -> extractRegex(srcText, block.leftOrPattern)
+            ParseMode.JSON -> extractJsonPath(srcText, block.leftOrPattern)
+        }
+        if (extracted != null) {
+            if (block.outputName.isNotBlank()) {
+                variables[block.outputName] = extracted
+                if (block.isCapture) captures[block.outputName] = extracted
+            }
+            logTrace("#${idx + 1} [PARSE ${block.mode.label}] ${block.outputName} = $extracted")
+        } else {
+            logTrace("#${idx + 1} [PARSE ${block.mode.label}] ${block.outputName} -> (no match)")
+        }
+    }
+
+    private fun evaluateKeyCheckBlock(
+        idx: Int,
+        block: ConfigBlock.KeyCheckBlock,
+        combinedSource: String,
+        logTrace: (String) -> Unit
+    ): Triple<String?, String?, Boolean> {
+        val matchedRetry = block.retryKeys.firstOrNull { key ->
+            key.isNotBlank() && combinedSource.contains(key, ignoreCase = true)
+        }
+        if (matchedRetry != null) {
+            logTrace("#${idx + 1} [KEYCHECK] Matched RETRY key '$matchedRetry'")
+            return Triple("RETRY", "RetryKey=$matchedRetry", true)
+        }
+
+        val (scanOutcome, matchedKey) = NativeScannerBridge.scanResponseKeys(
+            body = combinedSource,
+            successKeys = block.successKeys,
+            customKeys = block.customKeys,
+            failureKeys = block.failureKeys
+        )
+        return when (scanOutcome) {
+            KeyScanOutcome.FAIL -> {
+                logTrace("#${idx + 1} [KEYCHECK] Matched FAILURE key '$matchedKey'")
+                Triple("BAD", matchedKey, true)
+            }
+            KeyScanOutcome.CUSTOM -> {
+                logTrace("#${idx + 1} [KEYCHECK] Matched CUSTOM key '$matchedKey'")
+                Triple("CUSTOM", matchedKey, false)
+            }
+            KeyScanOutcome.HIT -> {
+                logTrace("#${idx + 1} [KEYCHECK] Matched SUCCESS key '$matchedKey'")
+                Triple("HIT", matchedKey, false)
+            }
+            KeyScanOutcome.NONE -> {
+                logTrace("#${idx + 1} [KEYCHECK] No keys matched")
+                Triple(null, null, false)
+            }
+        }
+    }
+
     fun checkProxy(
         proxy: ProxyItem,
         timeoutSec: Int,
         probeUrl: String = "https://httpbin.org/ip"
     ): Triple<ProxyStatus, Int?, String> {
-        val client = OpenBulletNetworkClient.buildClient(timeoutSec, proxy)
-        val req = Request.Builder().url(probeUrl).get().build()
         val start = System.currentTimeMillis()
         return runCatching {
+            val client = OpenBulletNetworkClient.buildClient(timeoutSec, proxy)
+            val req = Request.Builder().url(probeUrl).get().build()
             client.newCall(req).execute().use { resp ->
                 val ping = (System.currentTimeMillis() - start).toInt()
                 when {
@@ -736,9 +838,24 @@ object HttpExecutionEngine {
                     else -> Triple(ProxyStatus.BAD, ping, "HTTP ${resp.code}")
                 }
             }
-        }.getOrElse {
-            Triple(ProxyStatus.BAD, null, "Unreachable")
+        }.getOrElse { err ->
+            val reason = if (err is IllegalArgumentException) "Invalid URL/Proxy" else "Unreachable"
+            Triple(ProxyStatus.BAD, null, reason)
         }
+    }
+
+    private fun substituteUrlVars(
+        template: String,
+        variables: Map<String, String>
+    ): String {
+        val queryIdx = template.indexOf('?')
+        if (queryIdx < 0) {
+            return substituteVars(template, variables, urlEncode = false)
+        }
+        val prefix = template.substring(0, queryIdx)
+        val queryAndFragment = template.substring(queryIdx)
+        return substituteVars(prefix, variables, urlEncode = false) +
+            substituteVars(queryAndFragment, variables, urlEncode = true)
     }
 
     private fun substituteVars(
@@ -746,15 +863,12 @@ object HttpExecutionEngine {
         variables: Map<String, String>,
         urlEncode: Boolean
     ): String {
-        var result = template
-        variables.forEach { (key, value) ->
-            val token = "<$key>"
-            if (result.contains(token, ignoreCase = false)) {
-                val replacement = if (urlEncode) URLEncoder.encode(value, "UTF-8") else value
-                result = result.replace(token, replacement)
-            }
+        if (!template.contains('<')) return template
+        return varTokenRegex.replace(template) { match ->
+            val key = match.groupValues[1]
+            val value = variables[key] ?: return@replace match.value
+            if (urlEncode) URLEncoder.encode(value, "UTF-8") else value
         }
-        return result
     }
 
     private fun runScriptFunction(type: ScriptFunctionType, input: String): String {
@@ -766,9 +880,9 @@ object HttpExecutionEngine {
                 .digest(input.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
             ScriptFunctionType.BASE64_ENCODE ->
-                Base64.encodeToString(input.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                input.encodeUtf8().base64()
             ScriptFunctionType.BASE64_DECODE ->
-                runCatching { String(Base64.decode(input, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
+                runCatching { input.trim().decodeBase64()?.utf8().orEmpty() }.getOrDefault("")
             ScriptFunctionType.URL_ENCODE -> URLEncoder.encode(input, "UTF-8")
             ScriptFunctionType.URL_DECODE -> runCatching { URLDecoder.decode(input, "UTF-8") }.getOrDefault(input)
             ScriptFunctionType.UPPERCASE -> input.uppercase()
@@ -789,27 +903,50 @@ object HttpExecutionEngine {
     private fun extractRegex(source: String, pattern: String): String? {
         if (pattern.isEmpty()) return null
         return runCatching {
-            val match = Regex(pattern).find(source) ?: return null
+            val match = compiledRegex(pattern).find(source) ?: return null
             val group = if (match.groupValues.size > 1) match.groupValues[1] else match.value
             group.trim().take(120)
         }.getOrNull()
     }
 
     private fun extractJsonPath(source: String, dotPath: String): String? {
-        if (dotPath.isBlank()) return null
+        val trimmedSource = source.trim()
+        if (dotPath.isBlank() || trimmedSource.isEmpty()) return null
         return runCatching {
-            var current: Any? = JSONObject(source)
-            for (segment in dotPath.split(".")) {
+            var current: Any? = lenientJsonAdapter.fromJson(trimmedSource) ?: return null
+            val segments = jsonPathSegmentRegex.findAll(dotPath)
+                .map { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+                .toList()
+            if (segments.isEmpty()) return null
+
+            for (segment in segments) {
                 current = when (current) {
-                    is JSONObject -> if (current.has(segment)) current.get(segment) else return null
-                    is JSONArray -> {
+                    is Map<*, *> -> {
+                        if (!current.containsKey(segment)) return null
+                        current[segment]
+                    }
+                    is List<*> -> {
                         val index = segment.toIntOrNull() ?: return null
-                        if (index in 0 until current.length()) current.get(index) else return null
+                        if (index in current.indices) current[index] else return null
                     }
                     else -> return null
                 }
             }
-            if (current == null || current == JSONObject.NULL) null else current.toString().take(120)
+            formatJsonScalar(current)?.take(120)
         }.getOrNull()
+    }
+
+    private fun formatJsonScalar(value: Any?): String? {
+        return when (value) {
+            null -> null
+            is Double -> {
+                if (value.isFinite() && value == value.toLong().toDouble()) {
+                    value.toLong().toString()
+                } else {
+                    value.toString()
+                }
+            }
+            else -> value.toString()
+        }
     }
 }

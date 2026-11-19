@@ -7,10 +7,13 @@ import androidx.work.workDataOf
 import com.example.data.local.OpenBulletDatabase
 import com.example.network.HttpExecutionEngine
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -27,6 +30,7 @@ class ProxyCheckWorker(
         val timeoutSec = (settings?.requestTimeoutSec ?: 8).coerceIn(2, 15)
         val keepAwake = settings?.keepAwakeEnabled ?: true
         val probeUrl = inputData.getString(KEY_PROBE_URL)
+            ?.takeIf { it.isNotBlank() }
             ?: settings?.proxyJudgeUrl?.takeIf { it.isNotBlank() }
             ?: "https://httpbin.org/ip"
 
@@ -35,7 +39,7 @@ class ProxyCheckWorker(
             return@withContext Result.success(workDataOf(KEY_CHECKED to 0, KEY_TOTAL to 0))
         }
 
-        runCatching {
+        try {
             setForeground(
                 BackgroundKeepAliveHelper.buildForegroundInfo(
                     context = applicationContext,
@@ -47,17 +51,22 @@ class ProxyCheckWorker(
                     progressTotal = proxies.size
                 )
             )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Foreground promotion may be restricted by OEM background limits; continue execution
         }
 
         BackgroundKeepAliveHelper.withKeepAwakeLocks(applicationContext, enabled = keepAwake) {
             val checked = AtomicInteger(0)
+            val lastProgressMs = AtomicLong(0L)
             val semaphore = Semaphore(8)
 
             coroutineScope {
                 proxies.map { proxy ->
                     async {
                         semaphore.withPermit {
-                            if (isStopped) return@withPermit
+                            if (!isActive || isStopped) return@withPermit
                             val (status, pingMs, info) = HttpExecutionEngine.checkProxy(
                                 proxy = proxy,
                                 timeoutSec = timeoutSec,
@@ -70,9 +79,13 @@ class ProxyCheckWorker(
                                 country = info
                             )
                             val done = checked.incrementAndGet()
-                            setProgress(workDataOf(KEY_CHECKED to done, KEY_TOTAL to proxies.size))
+                            val now = System.currentTimeMillis()
+                            val prev = lastProgressMs.get()
+                            if (done == proxies.size || (done % 2 == 0 && now - prev >= 200L && lastProgressMs.compareAndSet(prev, now))) {
+                                setProgress(workDataOf(KEY_CHECKED to done, KEY_TOTAL to proxies.size))
+                            }
                             if (done % 5 == 0 || done == proxies.size) {
-                                runCatching {
+                                try {
                                     setForeground(
                                         BackgroundKeepAliveHelper.buildForegroundInfo(
                                             context = applicationContext,
@@ -84,6 +97,10 @@ class ProxyCheckWorker(
                                             progressTotal = proxies.size
                                         )
                                     )
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (_: Throwable) {
+                                    // Non-fatal notification update failure
                                 }
                             }
                         }

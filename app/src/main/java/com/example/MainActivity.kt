@@ -1,8 +1,6 @@
 package com.example
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.os.Build
@@ -20,6 +18,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -29,12 +28,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,9 +50,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ActiveDialog
+import com.example.model.AppThemeMode
 import com.example.model.MainTab
-import com.example.model.ProxyStatus
+import com.example.model.RunnerUiState
 import com.example.ui.components.ObBottomNavigationBar
+import com.example.ui.components.ObNavigationDrawerSheet
 import com.example.ui.components.ObNavigationRail
 import com.example.ui.components.ObWindowHeader
 import com.example.ui.dialogs.OpenBulletDialogHost
@@ -64,9 +67,19 @@ import com.example.ui.screens.RunnerScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.ToolsScreen
 import com.example.ui.screens.WordlistsScreen
-import com.example.ui.theme.ObColors
 import com.example.ui.theme.OpenBulletTheme
-import com.example.viewmodel.OpenBulletViewModel
+import com.example.util.FileExportHelper
+import com.example.viewmodel.AppShellViewModel
+import com.example.viewmodel.AppViewModelFactory
+import com.example.viewmodel.ConfigsViewModel
+import com.example.viewmodel.HitsDbViewModel
+import com.example.viewmodel.ProxiesViewModel
+import com.example.viewmodel.RunnerViewModel
+import com.example.viewmodel.SettingsViewModel
+import com.example.viewmodel.ToolsViewModel
+import com.example.viewmodel.UiEvent
+import com.example.viewmodel.WordlistsViewModel
+import kotlinx.coroutines.flow.merge
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,20 +89,59 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         )
         setContent {
-            val viewModel: OpenBulletViewModel = viewModel()
-            OpenBulletApp(viewModel = viewModel)
+            OpenBulletApp(activity = this)
         }
     }
 }
 
 @Composable
 fun OpenBulletApp(
-    viewModel: OpenBulletViewModel = viewModel()
+    activity: ComponentActivity? = null,
+    viewModelFactory: AppViewModelFactory = remember { AppViewModelFactory() }
 ) {
+    val shellVm: AppShellViewModel = viewModel(factory = viewModelFactory)
+    val runnerVm: RunnerViewModel = viewModel(factory = viewModelFactory)
+    val proxiesVm: ProxiesViewModel = viewModel(factory = viewModelFactory)
+    val wordlistsVm: WordlistsViewModel = viewModel(factory = viewModelFactory)
+    val configsVm: ConfigsViewModel = viewModel(factory = viewModelFactory)
+    val hitsVm: HitsDbViewModel = viewModel(factory = viewModelFactory)
+    val toolsVm: ToolsViewModel = viewModel(factory = viewModelFactory)
+    val settingsVm: SettingsViewModel = viewModel(factory = viewModelFactory)
+
+    val shellState by shellVm.uiState.collectAsStateWithLifecycle()
+    val activeDialog by shellVm.activeDialog.collectAsStateWithLifecycle()
+    val runnerState by runnerVm.uiState.collectAsStateWithLifecycle()
+    val proxiesState by proxiesVm.uiState.collectAsStateWithLifecycle()
+    val wordlistsState by wordlistsVm.uiState.collectAsStateWithLifecycle()
+    val configsState by configsVm.uiState.collectAsStateWithLifecycle()
+    val hitsState by hitsVm.uiState.collectAsStateWithLifecycle()
+    val toolsState by toolsVm.uiState.collectAsStateWithLifecycle()
+    val settingsState by settingsVm.uiState.collectAsStateWithLifecycle()
+
     val context = LocalContext.current
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingNotificationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    val resolvedDarkTheme = when (shellState.themeMode) {
+        AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+        AppThemeMode.DARK -> true
+        AppThemeMode.LIGHT -> false
+    }
+
+    DisposableEffect(activity, resolvedDarkTheme) {
+        if (activity != null) {
+            val barStyle = if (resolvedDarkTheme) {
+                SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+            } else {
+                SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+            }
+            activity.enableEdgeToEdge(
+                statusBarStyle = barStyle,
+                navigationBarStyle = barStyle
+            )
+        }
+        onDispose {}
+    }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -113,43 +165,88 @@ fun OpenBulletApp(
         action()
     }
 
-    LaunchedEffect(state.statusBannerMessage) {
-        val msg = state.statusBannerMessage
-        if (msg != null) {
-            snackbarHostState.showSnackbar(
-                message = msg,
-                duration = SnackbarDuration.Short
-            )
-            viewModel.clearBannerMessage()
+    LaunchedEffect(Unit) {
+        merge(
+            shellVm.events,
+            runnerVm.events,
+            proxiesVm.events,
+            wordlistsVm.events,
+            configsVm.events,
+            hitsVm.events,
+            toolsVm.events,
+            settingsVm.events
+        ).collect { event ->
+            when (event) {
+                is UiEvent.ShowSnackbar -> {
+                    snackbarHostState.showSnackbar(
+                        message = event.message,
+                        duration = SnackbarDuration.Short
+                    )
+                }
+                is UiEvent.ShareFile -> {
+                    val shared = FileExportHelper.shareTextFile(
+                        context = context,
+                        fileName = event.fileName,
+                        content = event.content,
+                        mimeType = event.mimeType,
+                        alsoCopyToClipboard = event.alsoCopyToClipboard
+                    )
+                    if (!shared) {
+                        snackbarHostState.showSnackbar(
+                            message = "Copied ${event.fileName} (no share handler found)",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
+                is UiEvent.CopyText -> {
+                    FileExportHelper.copyToClipboard(context, event.label, event.text)
+                    snackbarHostState.showSnackbar(
+                        message = event.feedbackMessage,
+                        duration = SnackbarDuration.Short
+                    )
+                }
+            }
         }
     }
 
+    val openEditor = configsState.editor
     BackHandler(
-        enabled = state.activeDialog != ActiveDialog.None ||
-            state.configEditor != null ||
-            state.tabHistory.isNotEmpty() ||
-            state.activeTab != MainTab.RUNNER
+        enabled = activeDialog != ActiveDialog.None ||
+            openEditor != null ||
+            shellState.tabHistory.isNotEmpty() ||
+            shellState.activeTab != MainTab.RUNNER
     ) {
-        viewModel.navigateBack()
+        shellVm.navigateBack(
+            hasOpenEditor = openEditor != null,
+            closeEditor = configsVm::closeEditor
+        )
     }
 
-    OpenBulletTheme(accentColorOverride = Color(state.settings.accentHex)) {
+    OpenBulletTheme(
+        themeMode = shellState.themeMode,
+        useDynamicColor = shellState.useDynamicColor,
+        accentColorOverride = Color(shellState.accentHex)
+    ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ObColors.ChromeBackground)
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
         ) {
             val isCompact = maxWidth < 600.dp
+            val isExpanded = maxWidth >= 840.dp
 
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
-                containerColor = ObColors.WorkspaceBackground,
+                containerColor = MaterialTheme.colorScheme.background,
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 bottomBar = {
-                    if (isCompact && state.configEditor == null) {
+                    if (isCompact && openEditor == null) {
                         ObBottomNavigationBar(
-                            activeTab = state.activeTab,
-                            onSelectTab = viewModel::selectTab
+                            shellState = shellState,
+                            onSelectTab = { tab ->
+                                if (openEditor != null) configsVm.closeEditor()
+                                shellVm.selectTab(tab)
+                            }
                         )
                     }
                 },
@@ -157,8 +254,8 @@ fun OpenBulletApp(
                     SnackbarHost(hostState = snackbarHostState) { data ->
                         Snackbar(
                             snackbarData = data,
-                            containerColor = ObColors.SurfaceTableHeader,
-                            contentColor = ObColors.TextPrimary
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            contentColor = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -170,12 +267,15 @@ fun OpenBulletApp(
                 ) {
                     ObWindowHeader(
                         isCompact = isCompact,
-                        isRunning = state.isRunning,
-                        activeTab = state.activeTab,
-                        timestampsEnabled = state.settings.showTimestampsInConsole,
-                        onSelectTab = viewModel::selectTab,
-                        onToggleTimestamps = viewModel::toggleTimestampLogging,
-                        onSnapshotClick = viewModel::captureSnapshotSummary
+                        isRunning = shellState.isRunnerActive,
+                        activeTab = shellState.activeTab,
+                        timestampsEnabled = shellState.showTimestampsInConsole,
+                        onSelectTab = { tab ->
+                            if (openEditor != null) configsVm.closeEditor()
+                            shellVm.selectTab(tab)
+                        },
+                        onToggleTimestamps = shellVm::toggleTimestamps,
+                        onSnapshotClick = runnerVm::captureSnapshotSummary
                     )
 
                     Row(
@@ -183,11 +283,25 @@ fun OpenBulletApp(
                             .fillMaxWidth()
                             .weight(1f)
                     ) {
-                        if (!isCompact) {
-                            ObNavigationRail(
-                                activeTab = state.activeTab,
-                                onSelectTab = viewModel::selectTab
-                            )
+                        when {
+                            isExpanded -> {
+                                ObNavigationDrawerSheet(
+                                    shellState = shellState,
+                                    onSelectTab = { tab ->
+                                        if (openEditor != null) configsVm.closeEditor()
+                                        shellVm.selectTab(tab)
+                                    }
+                                )
+                            }
+                            !isCompact -> {
+                                ObNavigationRail(
+                                    shellState = shellState,
+                                    onSelectTab = { tab ->
+                                        if (openEditor != null) configsVm.closeEditor()
+                                        shellVm.selectTab(tab)
+                                    }
+                                )
+                            }
                         }
 
                         Box(
@@ -195,41 +309,32 @@ fun OpenBulletApp(
                                 .weight(1f)
                                 .fillMaxHeight()
                         ) {
-                            val activeEditor = state.configEditor
-                            if (activeEditor != null) {
-                                val usableProxies = state.proxies.count {
-                                    it.status == ProxyStatus.AVAILABLE || it.status == ProxyStatus.UNTESTED
-                                }
+                            if (openEditor != null) {
                                 ConfigEditorScreen(
-                                    editorState = activeEditor,
-                                    usableProxyCount = usableProxies,
-                                    onBack = viewModel::closeConfigEditor,
-                                    onMetadataChange = viewModel::updateEditorMetadata,
-                                    onApplyPreset = viewModel::applyTemplateToEditor,
-                                    onSelectSubTab = viewModel::selectEditorSubTab,
-                                    onAddBlock = viewModel::addBlockToEditor,
-                                    onUpdateBlock = viewModel::updateBlockInEditor,
-                                    onMoveBlock = viewModel::moveBlockInEditor,
-                                    onDeleteBlock = viewModel::deleteBlockFromEditor,
-                                    onRawScriptChange = viewModel::updateEditorRawScript,
-                                    onDebugInputChange = viewModel::updateEditorDebugInputs,
-                                    onRunDebug = viewModel::runConfigDebug,
-                                    onExportLoli = {
-                                        val exported = viewModel.buildActiveEditorConfigExport(
-                                            com.example.network.ConfigExportFormat.LOLI
-                                        )
-                                        if (exported != null) {
-                                            val (fileName, content) = exported
-                                            copyAndShareTextContent(context, fileName, content)
-                                            viewModel.showBannerMessage("Copied & exporting $fileName")
-                                        }
+                                    editorState = openEditor,
+                                    usableProxyCount = configsState.usableProxyCount,
+                                    onBack = configsVm::closeEditor,
+                                    onMetadataChange = configsVm::updateEditorMetadata,
+                                    onApplyPreset = configsVm::applyPresetToEditor,
+                                    onSelectSubTab = configsVm::selectEditorSubTab,
+                                    onAddBlock = configsVm::addBlockToEditor,
+                                    onUpdateBlock = configsVm::updateBlockInEditor,
+                                    onMoveBlock = configsVm::moveBlockInEditor,
+                                    onDeleteBlock = configsVm::deleteBlockFromEditor,
+                                    onRawScriptChange = configsVm::updateEditorRawScript,
+                                    onDebugInputChange = configsVm::updateEditorDebugInputs,
+                                    onRunDebug = configsVm::runConfigDebug,
+                                    onExportLoli = configsVm::exportActiveEditorLoli,
+                                    onSave = { loadInRunner ->
+                                        val loaded = configsVm.saveEditedConfig(loadInRunner)
+                                        if (loaded) shellVm.selectTab(MainTab.RUNNER)
                                     },
-                                    onSave = viewModel::saveEditedConfig,
+                                    onCopyFeedback = shellVm::showMessage,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             } else {
                                 AnimatedContent(
-                                    targetState = state.activeTab,
+                                    targetState = shellState.activeTab,
                                     transitionSpec = {
                                         fadeIn(animationSpec = tween(180)) togetherWith
                                             fadeOut(animationSpec = tween(140))
@@ -238,153 +343,161 @@ fun OpenBulletApp(
                                 ) { tab ->
                                     when (tab) {
                                         MainTab.RUNNER -> RunnerScreen(
-                                            state = state,
-                                            onStartLineChange = viewModel::updateStartLine,
-                                            onBotsChange = viewModel::updateBotsCount,
-                                            onEditStartClick = { viewModel.openDialog(ActiveDialog.EditStartLine) },
-                                            onEditBotsClick = { viewModel.openDialog(ActiveDialog.EditBotsCount) },
-                                            onProxyModeSelect = viewModel::selectProxyMode,
+                                            state = runnerState,
+                                            onStartLineDraft = runnerVm::updateStartLineDraft,
+                                            onStartLineCommit = runnerVm::commitStartLine,
+                                            onBotsDraft = runnerVm::updateBotsCountDraft,
+                                            onBotsCommit = runnerVm::commitBotsCount,
+                                            onEditStartClick = { shellVm.openDialog(ActiveDialog.EditStartLine) },
+                                            onEditBotsClick = { shellVm.openDialog(ActiveDialog.EditBotsCount) },
+                                            onProxyModeSelect = runnerVm::selectProxyMode,
                                             onStartStopClick = {
-                                                if (state.isRunning || state.isPaused) {
-                                                    viewModel.toggleStartStop()
+                                                if (runnerState.isRunning || runnerState.isPaused) {
+                                                    runnerVm.toggleStartStop()
                                                 } else {
-                                                    runWithNotificationPermission { viewModel.toggleStartStop() }
+                                                    runWithNotificationPermission { runnerVm.toggleStartStop() }
                                                 }
                                             },
                                             onPauseResumeClick = {
-                                                if (state.isRunning) {
-                                                    viewModel.pauseOrResumeRunner()
+                                                if (runnerState.isRunning) {
+                                                    runnerVm.pauseOrResumeRunner()
                                                 } else {
-                                                    runWithNotificationPermission { viewModel.pauseOrResumeRunner() }
+                                                    runWithNotificationPermission { runnerVm.pauseOrResumeRunner() }
                                                 }
                                             },
-                                            onResultTabSelect = viewModel::selectResultTab,
+                                            onResultTabSelect = runnerVm::selectResultTab,
                                             onInspectResultRow = { row ->
-                                                viewModel.openDialog(ActiveDialog.InspectResult(row))
+                                                shellVm.openDialog(ActiveDialog.InspectResult(row))
                                             },
-                                            onOpenConfigDialog = { viewModel.openDialog(ActiveDialog.SelectConfig) },
-                                            onOpenWordlistDialog = { viewModel.openDialog(ActiveDialog.SelectWordlist) },
-                                            onClearConsole = viewModel::clearConsoleLogs,
-                                            onBackClick = { viewModel.navigateBack() },
+                                            onOpenConfigDialog = { shellVm.openDialog(ActiveDialog.SelectConfig) },
+                                            onOpenWordlistDialog = { shellVm.openDialog(ActiveDialog.SelectWordlist) },
+                                            onLoadStarterSample = runnerVm::loadStarterSample,
+                                            onClearConsole = runnerVm::clearConsoleLogs,
+                                            onCopyConsole = { shellVm.showMessage("Copied console output") },
+                                            onBackClick = {
+                                                shellVm.navigateBack(
+                                                    hasOpenEditor = false,
+                                                    closeEditor = {}
+                                                )
+                                            },
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.PROXIES -> ProxiesScreen(
-                                            proxies = state.proxies,
-                                            activeFilter = state.proxyFilter,
-                                            isCheckingProxies = state.isCheckingProxies,
-                                            proxyCheckStatusText = state.proxyCheckStatusText,
-                                            onFilterChange = viewModel::setProxyFilter,
-                                            onAddClick = { viewModel.openDialog(ActiveDialog.AddProxies) },
+                                            state = proxiesState,
+                                            onProtocolFilterChange = proxiesVm::setProtocolFilter,
+                                            onStatusFilterChange = proxiesVm::setStatusFilter,
+                                            onAddClick = { shellVm.openDialog(ActiveDialog.AddProxies) },
                                             onToggleCheckProxies = {
-                                                if (state.isCheckingProxies) {
-                                                    viewModel.toggleProxyCheckWork()
+                                                if (proxiesState.isCheckingProxies) {
+                                                    proxiesVm.toggleCheckProxies()
                                                 } else {
-                                                    runWithNotificationPermission { viewModel.toggleProxyCheckWork() }
+                                                    runWithNotificationPermission { proxiesVm.toggleCheckProxies() }
                                                 }
                                             },
-                                            onRemoveBad = viewModel::removeBadAndBannedProxies,
-                                            onExportProxies = {
-                                                val txt = viewModel.buildAliveProxiesExportText()
-                                                if (txt.isBlank()) {
-                                                    viewModel.showBannerMessage("No proxies to export")
-                                                } else {
-                                                    shareTextContent(context, "OpenBullet Proxies", txt)
-                                                }
-                                            },
-                                            onDeleteProxy = viewModel::deleteProxy,
-                                            onClearAll = viewModel::clearProxies,
+                                            onRemoveBad = proxiesVm::removeBadAndBanned,
+                                            onExportProxies = proxiesVm::exportProxies,
+                                            onDeleteProxy = proxiesVm::deleteProxy,
+                                            onClearAll = proxiesVm::clearAll,
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.WORDLISTS -> WordlistsScreen(
-                                            wordlists = state.wordlists,
-                                            selectedWordlistId = state.selectedWordlist?.id,
-                                            onAddClick = { viewModel.openDialog(ActiveDialog.AddWordlist) },
-                                            onSelectForRunner = {
-                                                viewModel.selectWordlist(it)
-                                                viewModel.selectTab(MainTab.RUNNER)
+                                            state = wordlistsState,
+                                            onAddClick = { shellVm.openDialog(ActiveDialog.AddWordlist) },
+                                            onSelectForRunner = { list ->
+                                                wordlistsVm.selectForRunner(list)
+                                                shellVm.selectTab(MainTab.RUNNER)
                                             },
-                                            onDeleteWordlist = viewModel::deleteWordlist,
-                                            onClearAll = viewModel::clearWordlists,
+                                            onDeleteWordlist = wordlistsVm::deleteWordlist,
+                                            onClearAll = wordlistsVm::clearAll,
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.CONFIGS -> ConfigsScreen(
-                                            configs = state.configs,
-                                            selectedPreviewId = state.selectedConfigPreviewId,
-                                            activeRunnerConfigId = state.selectedConfig?.id,
-                                            onNewConfigClick = { viewModel.openConfigEditor(null) },
-                                            onImportConfigClick = { viewModel.openDialog(ActiveDialog.ImportConfig) },
+                                            state = configsState,
+                                            onSearchQueryChange = configsVm::updateSearchQuery,
+                                            onCategoryFilterChange = configsVm::setCategoryFilter,
+                                            onNewConfigClick = { configsVm.openEditor(null) },
+                                            onImportConfigClick = { shellVm.openDialog(ActiveDialog.ImportConfig) },
+                                            onDuplicateConfig = configsVm::duplicateConfig,
                                             onExportConfigLoli = { cfg ->
-                                                val content = viewModel.buildSingleConfigExport(
-                                                    cfg,
-                                                    com.example.network.ConfigExportFormat.LOLI
-                                                )
-                                                val subject = "${cfg.name}.loli"
-                                                copyAndShareTextContent(context, subject, content)
-                                                viewModel.showBannerMessage("Exported & copied $subject")
+                                                configsVm.exportSingleConfig(cfg, com.example.network.ConfigExportFormat.LOLI)
                                             },
                                             onExportConfigJson = { cfg ->
-                                                val content = viewModel.buildSingleConfigExport(
-                                                    cfg,
-                                                    com.example.network.ConfigExportFormat.JSON
-                                                )
-                                                val subject = "${cfg.name}.json"
-                                                copyAndShareTextContent(context, subject, content)
-                                                viewModel.showBannerMessage("Exported & copied $subject")
+                                                configsVm.exportSingleConfig(cfg, com.example.network.ConfigExportFormat.JSON)
                                             },
-                                            onExportAllJson = {
-                                                val content = viewModel.buildAllConfigsJsonExport()
-                                                if (content.isNotBlank()) {
-                                                    copyAndShareTextContent(context, "openbullet_configs_backup.json", content)
-                                                    viewModel.showBannerMessage("Exported all ${state.configs.size} configs (.json)")
-                                                }
+                                            onExportAllJson = configsVm::exportAllConfigsJson,
+                                            onEditConfig = { configsVm.openEditor(it) },
+                                            onSelectPreview = configsVm::selectPreview,
+                                            onUseInRunner = { cfg ->
+                                                configsVm.useInRunner(cfg)
+                                                shellVm.selectTab(MainTab.RUNNER)
                                             },
-                                            onEditConfig = { viewModel.openConfigEditor(it) },
-                                            onSelectPreview = viewModel::selectConfigForPreview,
-                                            onUseInRunner = {
-                                                viewModel.selectConfig(it)
-                                                viewModel.selectTab(MainTab.RUNNER)
-                                            },
-                                            onDeleteConfig = viewModel::deleteConfig,
+                                            onDeleteConfig = configsVm::deleteConfig,
+                                            onCopyScriptFeedback = { shellVm.showMessage("Copied LoliScript to clipboard") },
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.HITS_DB -> HitsDbScreen(
-                                            hits = state.hitsDb,
-                                            searchQuery = state.hitsSearchQuery,
-                                            typeFilter = state.hitsTypeFilter,
-                                            onSearchChange = viewModel::updateHitsSearchQuery,
-                                            onTypeFilterChange = viewModel::setHitsTypeFilter,
-                                            onExportHits = {
-                                                val txt = viewModel.buildHitsExportText()
-                                                if (txt.isBlank()) {
-                                                    viewModel.showBannerMessage("No hits to export")
-                                                } else {
-                                                    shareTextContent(context, "OpenBullet Hits", txt)
-                                                }
-                                            },
-                                            onCopyHit = { hit -> viewModel.showBannerMessage("Copied ${hit.data}") },
-                                            onDeleteHit = viewModel::deleteHitItem,
-                                            onClearAll = viewModel::clearHitsDb,
+                                            state = hitsState,
+                                            onSearchChange = hitsVm::updateSearchQuery,
+                                            onTypeFilterChange = hitsVm::setTypeFilter,
+                                            onExportHits = hitsVm::exportHits,
+                                            onInspectHit = { hit -> shellVm.openDialog(ActiveDialog.InspectHit(hit)) },
+                                            onCopyHit = hitsVm::copyHit,
+                                            onDeleteHit = hitsVm::deleteHit,
+                                            onClearAll = hitsVm::clearAll,
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.TOOLS -> ToolsScreen(
-                                            tools = state.tools,
-                                            viewModel = viewModel,
+                                            tools = toolsState,
+                                            onSelectSection = toolsVm::selectSection,
+                                            onCleanerInputChange = toolsVm::updateCleanerInput,
+                                            onToggleCleanerDuplicates = toolsVm::toggleCleanerDuplicates,
+                                            onToggleCleanerTrim = toolsVm::toggleCleanerTrim,
+                                            onToggleCleanerEmpty = toolsVm::toggleCleanerEmpty,
+                                            onRunCleaner = toolsVm::runListCleaner,
+                                            onSaveCleanedAsWordlist = toolsVm::saveCleanedAsWordlist,
+                                            onFormatterInputChange = toolsVm::updateFormatterInput,
+                                            onFormatterSeparatorChange = toolsVm::updateFormatterSeparator,
+                                            onRunFormatter = toolsVm::runComboFormatter,
+                                            onSaveFormattedAsWordlist = toolsVm::saveFormattedAsWordlist,
+                                            onRegexInputsChange = toolsVm::updateRegexInputs,
+                                            onHashInputChange = toolsVm::updateHashInput,
+                                            onNativeFieldsChange = toolsVm::updateNativeDiagnosticFields,
+                                            onRunNativeScannerTest = toolsVm::runNativeScannerTest,
+                                            onProbeUrlChange = toolsVm::updateProbeUrl,
+                                            onRunNetworkProbe = toolsVm::runNetworkProbe,
+                                            onCopyText = toolsVm::copyText,
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.SETTINGS -> SettingsScreen(
-                                            settings = state.settings,
-                                            viewModel = viewModel,
+                                            settings = settingsState,
+                                            onSelectSection = settingsVm::selectSection,
+                                            onToggleKeepAwake = settingsVm::toggleKeepAwake,
+                                            onToggleAutoSave = settingsVm::toggleAutoSave,
+                                            onToggleIgnoreEmpty = settingsVm::toggleIgnoreEmpty,
+                                            onToggleTimestamps = settingsVm::toggleTimestamps,
+                                            onTimeoutDraft = settingsVm::updateTimeoutDraft,
+                                            onTimeoutCommit = { settingsVm.commitTimeout() },
+                                            onMaxRetriesDraft = settingsVm::updateMaxRetriesDraft,
+                                            onMaxRetriesCommit = { settingsVm.commitMaxRetries() },
+                                            onProxyJudgeUrlChange = settingsVm::updateProxyJudgeUrl,
+                                            onToggleSoundOnHit = settingsVm::toggleSoundOnHit,
+                                            onToggleSoundOnFinish = settingsVm::toggleSoundOnFinish,
+                                            onTestHitSound = settingsVm::testHitSound,
+                                            onTestFinishSound = settingsVm::testFinishSound,
+                                            onSelectThemeMode = settingsVm::selectThemeMode,
+                                            onToggleDynamicColor = settingsVm::toggleDynamicColor,
+                                            onSelectAccentColor = settingsVm::selectAccentColor,
                                             modifier = Modifier.fillMaxSize()
                                         )
 
                                         MainTab.ABOUT -> AboutScreen(
-                                            nativeEngineBanner = state.nativeEngineBanner,
+                                            shellState = shellState,
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     }
@@ -396,42 +509,33 @@ fun OpenBulletApp(
             }
 
             OpenBulletDialogHost(
-                activeDialog = state.activeDialog,
-                currentStartLine = state.startLine,
-                currentBotsCount = state.botsCount,
-                configs = state.configs,
-                wordlists = state.wordlists,
-                onDismiss = viewModel::dismissDialog,
-                onSelectConfig = viewModel::selectConfig,
-                onSelectWordlist = viewModel::selectWordlist,
-                onUpdateStartLine = viewModel::updateStartLine,
-                onUpdateBotsCount = viewModel::updateBotsCount,
-                onOpenNewConfigDialog = { viewModel.openConfigEditor(null) },
-                onOpenAddWordlistDialog = { viewModel.openDialog(ActiveDialog.AddWordlist) },
-                onCreateConfig = viewModel::addConfig,
-                onImportConfigPayload = viewModel::importConfigPayload,
-                onImportConfigFromUrl = viewModel::importConfigFromUrl,
-                onCreateWordlist = viewModel::addWordlist,
-                onImportProxies = viewModel::addProxies,
-                onImportProxiesFromUrl = viewModel::importProxiesFromUrl
+                activeDialog = activeDialog,
+                currentStartLine = runnerState.startLine,
+                maxStartLine = (runnerState.selectedWordlist?.lineCount ?: 1000).coerceAtLeast(1),
+                currentBotsCount = runnerState.botsCount,
+                configs = configsState.configs,
+                wordlists = wordlistsState.wordlists,
+                onDismiss = shellVm::dismissDialog,
+                onSelectConfig = runnerVm::selectConfig,
+                onSelectWordlist = runnerVm::selectWordlist,
+                onUpdateStartLine = { runnerVm.commitStartLine(it) },
+                onUpdateBotsCount = { runnerVm.commitBotsCount(it) },
+                onOpenNewConfigDialog = {
+                    shellVm.dismissDialog()
+                    shellVm.selectTab(MainTab.CONFIGS)
+                    configsVm.openEditor(null)
+                },
+                onOpenAddWordlistDialog = { shellVm.openDialog(ActiveDialog.AddWordlist) },
+                onCreateConfig = configsVm::addConfig,
+                onImportConfigPayload = configsVm::importConfigPayload,
+                onImportConfigFromUrl = configsVm::importConfigFromUrl,
+                onCreateWordlist = wordlistsVm::addWordlist,
+                onImportProxies = proxiesVm::addProxies,
+                onImportProxiesFromUrl = proxiesVm::importProxiesFromUrl,
+                onShowMessage = shellVm::showMessage
             )
         }
     }
-}
-
-private fun copyAndShareTextContent(context: Context, subject: String, content: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-    cm?.setPrimaryClip(android.content.ClipData.newPlainText(subject, content))
-    shareTextContent(context, subject, content)
-}
-
-private fun shareTextContent(context: Context, subject: String, content: String) {
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_SUBJECT, subject)
-        putExtra(Intent.EXTRA_TEXT, content)
-    }
-    context.startActivity(Intent.createChooser(intent, subject))
 }
 
 @Preview(showBackground = true, widthDp = 960, heightDp = 640)
@@ -439,9 +543,11 @@ private fun shareTextContent(context: Context, subject: String, content: String)
 private fun OpenBulletWidePreview() {
     OpenBulletTheme {
         RunnerScreen(
-            state = com.example.model.OpenBulletUiState(),
-            onStartLineChange = {},
-            onBotsChange = {},
+            state = RunnerUiState(),
+            onStartLineDraft = {},
+            onStartLineCommit = {},
+            onBotsDraft = {},
+            onBotsCommit = {},
             onEditStartClick = {},
             onEditBotsClick = {},
             onProxyModeSelect = {},
