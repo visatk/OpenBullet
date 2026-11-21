@@ -100,7 +100,7 @@ object ConfigTemplates {
 }
 
 object LoliScriptParser {
-    private val requestRegex = Regex("""REQUEST\s+(GET|POST|PUT|PATCH|DELETE|HEAD)\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
+    private val requestRegex = Regex("""REQUEST\s+(GET|POST|PUT|PATCH|DELETE|HEAD|TCP)\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val headerRegex = Regex("""HEADER\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val contentTypeRegex = Regex("""CONTENT_TYPE\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val contentRegex = Regex("""CONTENT\s+"((?:\\.|[^"\\])*)"""", RegexOption.IGNORE_CASE)
@@ -115,7 +115,7 @@ object LoliScriptParser {
         RegexOption.IGNORE_CASE
     )
     private val functionRegex = Regex(
-        """FUNCTION\s+([A-Z0-9_]+)\s+"((?:\\.|[^"\\])*)"\s*->\s*VAR\s+"((?:\\.|[^"\\])+)"""",
+        """FUNCTION\s+([A-Z0-9_]+)\s+"((?:\\.|[^"\\])*)"\s*->\s*(?:VAR|CAP)\s+"((?:\\.|[^"\\])+)"""",
         RegexOption.IGNORE_CASE
     )
 
@@ -369,13 +369,15 @@ object LoliScriptParser {
                                 appendLine("HEADER \"${escape(headerLine)}\"")
                             }
                         val upperMethod = block.method.uppercase()
-                        if (upperMethod in setOf("POST", "PUT", "PATCH") ||
+                        if (upperMethod in setOf("POST", "PUT", "PATCH", "TCP") ||
                             (upperMethod == "DELETE" && block.postBody.isNotBlank())
                         ) {
-                            if (block.contentType.isNotBlank()) {
+                            if (block.contentType.isNotBlank() && upperMethod != "TCP") {
                                 appendLine("CONTENT_TYPE \"${escape(block.contentType.trim())}\"")
                             }
-                            appendLine("CONTENT \"${escape(block.postBody)}\"")
+                            if (block.postBody.isNotEmpty() || upperMethod != "TCP") {
+                                appendLine("CONTENT \"${escape(block.postBody)}\"")
+                            }
                         }
                         append("REDIRECT ${block.followRedirects}")
                     }
@@ -470,13 +472,15 @@ object HttpExecutionEngine {
         rawLine: String,
         script: ParsedLoliScript,
         timeoutSec: Int,
-        proxyItem: ProxyItem?
+        proxyItem: ProxyItem?,
+        customUserAgent: String = ""
     ): HttpCheckResult {
         val debug = executeWithTrace(
             rawLine = rawLine,
             script = script,
             timeoutSec = timeoutSec,
             proxyItem = proxyItem,
+            customUserAgent = customUserAgent,
             collectTrace = false
         )
         return HttpCheckResult(
@@ -503,7 +507,8 @@ object HttpExecutionEngine {
         rawLine: String,
         scriptText: String,
         timeoutSec: Int,
-        proxyItem: ProxyItem?
+        proxyItem: ProxyItem?,
+        customUserAgent: String = ""
     ): ConfigDebugResult {
         val parsed = LoliScriptParser.parse(scriptText)
         return executeWithTrace(
@@ -511,6 +516,7 @@ object HttpExecutionEngine {
             script = parsed,
             timeoutSec = timeoutSec,
             proxyItem = proxyItem,
+            customUserAgent = customUserAgent,
             collectTrace = true
         )
     }
@@ -520,6 +526,7 @@ object HttpExecutionEngine {
         script: ParsedLoliScript,
         timeoutSec: Int,
         proxyItem: ProxyItem?,
+        customUserAgent: String = "",
         collectTrace: Boolean
     ): ConfigDebugResult {
         val trimmedInput = rawLine.trim()
@@ -614,62 +621,87 @@ object HttpExecutionEngine {
                     val resolvedUrl = substituteUrlVars(block.url, variables)
                     val resolvedBody = substituteVars(block.postBody, variables, urlEncode = false)
                     val startMs = System.currentTimeMillis()
+                    val isRawTcp = block.method.equals("TCP", ignoreCase = true) ||
+                        resolvedUrl.startsWith("tcp://", ignoreCase = true)
+
                     val callResult = runCatching {
-                        val client = OpenBulletNetworkClient.buildClient(
-                            timeoutSec = timeoutSec,
-                            proxyItem = proxyItem,
-                            followRedirects = block.followRedirects,
-                            cookieJar = cookieJar
-                        )
-                        val reqBuilder = Request.Builder().url(resolvedUrl)
-                        var explicitContentType: String? = null
-                        block.headersText.lineSequence()
-                            .map { it.trim() }
-                            .filter { it.contains(":") }
-                            .forEach { headerLine ->
-                                val colonIdx = headerLine.indexOf(':')
-                                val k = headerLine.substring(0, colonIdx).trim()
-                                val v = substituteVars(
-                                    headerLine.substring(colonIdx + 1).trim(),
-                                    variables,
-                                    urlEncode = false
+                        if (isRawTcp) {
+                            val (tcpHost, tcpPort) = parseRawTcpEndpoint(resolvedUrl)
+                            val tcpExchange = RawTcpProxyTunnel.executeRawTcpExchange(
+                                targetHost = tcpHost,
+                                targetPort = tcpPort,
+                                payload = resolvedBody,
+                                proxy = proxyItem,
+                                timeoutMs = timeoutSec.coerceIn(1, 120) * 1000
+                            )
+                            Triple(200, tcpExchange.latencyMs, tcpExchange.responseText)
+                        } else {
+                            val client = OpenBulletNetworkClient.buildClient(
+                                timeoutSec = timeoutSec,
+                                proxyItem = proxyItem,
+                                followRedirects = block.followRedirects,
+                                cookieJar = cookieJar
+                            )
+                            val reqBuilder = Request.Builder().url(resolvedUrl)
+                            var explicitContentType: String? = null
+                            var hasExplicitUserAgent = false
+                            block.headersText.lineSequence()
+                                .map { it.trim() }
+                                .filter { it.contains(":") }
+                                .forEach { headerLine ->
+                                    val colonIdx = headerLine.indexOf(':')
+                                    val k = headerLine.substring(0, colonIdx).trim()
+                                    val v = substituteVars(
+                                        headerLine.substring(colonIdx + 1).trim(),
+                                        variables,
+                                        urlEncode = false
+                                    )
+                                    if (k.equals("Content-Type", ignoreCase = true)) {
+                                        explicitContentType = v
+                                    }
+                                    if (k.equals("User-Agent", ignoreCase = true)) {
+                                        hasExplicitUserAgent = true
+                                    }
+                                    if (k.isNotEmpty()) {
+                                        reqBuilder.header(k, v)
+                                    }
+                                }
+                            if (!hasExplicitUserAgent && customUserAgent.isNotBlank()) {
+                                reqBuilder.header(
+                                    "User-Agent",
+                                    substituteVars(customUserAgent.trim(), variables, urlEncode = false)
                                 )
-                                if (k.equals("Content-Type", ignoreCase = true)) {
-                                    explicitContentType = v
-                                }
-                                if (k.isNotEmpty()) {
-                                    reqBuilder.header(k, v)
-                                }
                             }
 
-                        val rawMediaType = explicitContentType
-                            ?: block.contentType.ifBlank { "application/x-www-form-urlencoded" }
-                        val mediaType = rawMediaType.toMediaType()
-                        when (block.method.uppercase()) {
-                            "POST" -> reqBuilder.post(resolvedBody.toRequestBody(mediaType))
-                            "PUT" -> reqBuilder.put(resolvedBody.toRequestBody(mediaType))
-                            "PATCH" -> reqBuilder.patch(resolvedBody.toRequestBody(mediaType))
-                            "DELETE" -> if (resolvedBody.isNotEmpty()) {
-                                reqBuilder.delete(resolvedBody.toRequestBody(mediaType))
-                            } else {
-                                reqBuilder.delete()
+                            val rawMediaType = explicitContentType
+                                ?: block.contentType.ifBlank { "application/x-www-form-urlencoded" }
+                            val mediaType = rawMediaType.toMediaType()
+                            when (block.method.uppercase()) {
+                                "POST" -> reqBuilder.post(resolvedBody.toRequestBody(mediaType))
+                                "PUT" -> reqBuilder.put(resolvedBody.toRequestBody(mediaType))
+                                "PATCH" -> reqBuilder.patch(resolvedBody.toRequestBody(mediaType))
+                                "DELETE" -> if (resolvedBody.isNotEmpty()) {
+                                    reqBuilder.delete(resolvedBody.toRequestBody(mediaType))
+                                } else {
+                                    reqBuilder.delete()
+                                }
+                                "HEAD" -> reqBuilder.head()
+                                else -> reqBuilder.get()
                             }
-                            "HEAD" -> reqBuilder.head()
-                            else -> reqBuilder.get()
-                        }
 
-                        client.newCall(reqBuilder.build()).execute().use { resp ->
-                            val elapsed = System.currentTimeMillis() - startMs
-                            val bodyStr = resp.body?.let { body ->
-                                val source = body.source()
-                                source.request(MAX_RESPONSE_BODY_BYTES)
-                                val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
-                                source.buffer.clone().readString(
-                                    minOf(source.buffer.size, MAX_RESPONSE_BODY_BYTES),
-                                    charset
-                                )
-                            }.orEmpty()
-                            Triple(resp.code, elapsed, bodyStr)
+                            client.newCall(reqBuilder.build()).execute().use { resp ->
+                                val elapsed = System.currentTimeMillis() - startMs
+                                val bodyStr = resp.body?.let { body ->
+                                    val source = body.source()
+                                    source.request(MAX_RESPONSE_BODY_BYTES)
+                                    val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                                    source.buffer.clone().readString(
+                                        minOf(source.buffer.size, MAX_RESPONSE_BODY_BYTES),
+                                        charset
+                                    )
+                                }.orEmpty()
+                                Triple(resp.code, elapsed, bodyStr)
+                            }
                         }
                     }
 
@@ -697,11 +729,12 @@ object HttpExecutionEngine {
                     totalLatency += elapsed
                     lastHttpCode = code
                     lastBody = bodyStr
-                    combinedSource = "HTTP/$code\n$bodyStr"
+                    combinedSource = if (isRawTcp) "TCP/$code\nHTTP/$code\n$bodyStr" else "HTTP/$code\n$bodyStr"
                     variables["SOURCE"] = bodyStr
                     variables["RESPONSECODE"] = code.toString()
                     variables["ADDRESS"] = resolvedUrl
-                    logTrace("#${idx + 1} [REQUEST ${block.method}] $resolvedUrl -> HTTP $code (${elapsed}ms, ${bodyStr.length} bytes)")
+                    val protoTag = if (isRawTcp) "TCP" else "HTTP"
+                    logTrace("#${idx + 1} [REQUEST ${block.method}] $resolvedUrl -> $protoTag $code (${elapsed}ms, ${bodyStr.length} bytes)")
                 }
 
                 is ConfigBlock.ParseBlock -> {
@@ -837,27 +870,78 @@ object HttpExecutionEngine {
         probeUrl: String = "https://httpbin.org/ip"
     ): Triple<ProxyStatus, Int?, String> {
         val start = System.currentTimeMillis()
+        val timeoutMs = timeoutSec.coerceIn(1, 120) * 1000
         return runCatching {
-            val client = OpenBulletNetworkClient.buildClient(timeoutSec, proxy)
-            val req = Request.Builder().url(probeUrl).get().build()
-            client.newCall(req).execute().use { resp ->
-                val ping = (System.currentTimeMillis() - start).toInt()
-                when {
-                    resp.isSuccessful -> Triple(ProxyStatus.AVAILABLE, ping, "Verified")
-                    resp.code == 403 || resp.code == 429 -> Triple(ProxyStatus.BANNED, ping, "HTTP ${resp.code}")
-                    else -> Triple(ProxyStatus.BAD, ping, "HTTP ${resp.code}")
+            val trimmedProbe = probeUrl.trim()
+            if (trimmedProbe.startsWith("tcp://", ignoreCase = true)) {
+                val (targetHost, targetPort) = parseRawTcpEndpoint(trimmedProbe)
+                RawTcpProxyTunnel.openConnection(
+                    targetHost = targetHost,
+                    targetPort = targetPort,
+                    proxy = proxy,
+                    timeoutMs = timeoutMs
+                ).use {
+                    val ping = (System.currentTimeMillis() - start).toInt().coerceAtLeast(1)
+                    Triple(ProxyStatus.AVAILABLE, ping, "${proxy.protocol.label} TCP")
+                }
+            } else {
+                val client = OpenBulletNetworkClient.buildClient(timeoutSec, proxy)
+                val req = Request.Builder().url(trimmedProbe).get().build()
+                client.newCall(req).execute().use { resp ->
+                    val ping = (System.currentTimeMillis() - start).toInt().coerceAtLeast(1)
+                    when {
+                        resp.isSuccessful -> Triple(ProxyStatus.AVAILABLE, ping, "${proxy.protocol.label} Verified")
+                        resp.code == 403 || resp.code == 429 -> Triple(ProxyStatus.BANNED, ping, "HTTP ${resp.code}")
+                        else -> Triple(ProxyStatus.BAD, ping, "HTTP ${resp.code}")
+                    }
                 }
             }
         }.getOrElse { err ->
-            val reason = if (err is IllegalArgumentException) "Invalid URL/Proxy" else "Unreachable"
-            Triple(ProxyStatus.BAD, null, reason)
+            val ping = (System.currentTimeMillis() - start).toInt().takeIf { it > 0 }
+            when {
+                err is ProxyTunnelException && (err.proxyStatusCode == 403 || err.proxyStatusCode == 429) ->
+                    Triple(ProxyStatus.BANNED, ping, "HTTP ${err.proxyStatusCode}")
+                err is ProxyTunnelException && err.proxyStatusCode == 407 ->
+                    Triple(ProxyStatus.BAD, ping, "Auth 407")
+                err is IllegalArgumentException ->
+                    Triple(ProxyStatus.BAD, null, "Invalid URL/Proxy")
+                else ->
+                    Triple(ProxyStatus.BAD, null, "Unreachable")
+            }
         }
+    }
+
+    private fun parseRawTcpEndpoint(urlOrAuthority: String): Pair<String, Int> {
+        val stripped = urlOrAuthority.trim()
+            .removePrefix("tcp://")
+            .removePrefix("TCP://")
+            .substringBefore('/')
+        if (stripped.startsWith("[")) {
+            val closeIdx = stripped.indexOf(']')
+            require(closeIdx > 1) { "Invalid IPv6 TCP endpoint: $urlOrAuthority" }
+            val host = stripped.substring(1, closeIdx).trim()
+            val portStr = stripped.substring(closeIdx + 1).removePrefix(":").trim()
+            val port = portStr.toIntOrNull()
+                ?: throw IllegalArgumentException("Missing or invalid TCP port in $urlOrAuthority")
+            require(port in 1..65535) { "TCP port out of range: $port" }
+            return host to port
+        }
+        val colonIdx = stripped.lastIndexOf(':')
+        require(colonIdx > 0) { "Raw TCP endpoint must specify host:port ($urlOrAuthority)" }
+        val host = stripped.substring(0, colonIdx).trim()
+        val port = stripped.substring(colonIdx + 1).trim().toIntOrNull()
+            ?: throw IllegalArgumentException("Invalid TCP port in $urlOrAuthority")
+        require(host.isNotEmpty() && port in 1..65535) { "Invalid TCP endpoint: $urlOrAuthority" }
+        return host to port
     }
 
     private fun substituteUrlVars(
         template: String,
         variables: Map<String, String>
     ): String {
+        if (template.trim().startsWith("tcp://", ignoreCase = true)) {
+            return substituteVars(template, variables, urlEncode = false)
+        }
         val queryIdx = template.indexOf('?')
         if (queryIdx < 0) {
             return substituteVars(template, variables, urlEncode = false)

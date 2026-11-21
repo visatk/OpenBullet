@@ -314,6 +314,7 @@ fun OpenBulletApp(
                                     usableProxyCount = configsState.usableProxyCount,
                                     onBack = configsVm::closeEditor,
                                     onMetadataChange = configsVm::updateEditorMetadata,
+                                    onExecutionSettingsChange = configsVm::updateEditorExecutionSettings,
                                     onApplyPreset = configsVm::applyPresetToEditor,
                                     onSelectSubTab = configsVm::selectEditorSubTab,
                                     onAddBlock = configsVm::addBlockToEditor,

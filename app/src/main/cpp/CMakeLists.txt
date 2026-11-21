@@ -18,6 +18,12 @@ target_compile_options(
     -Wextra
 )
 
+target_link_options(
+    openbullet_scanner
+    PRIVATE
+    "-Wl,-z,max-page-size=16384"
+)
+
 find_library(log-lib log)
 
 target_link_libraries(

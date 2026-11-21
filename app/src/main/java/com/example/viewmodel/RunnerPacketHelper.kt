@@ -74,11 +74,24 @@ object RunnerPacketHelper {
     }
 
     fun openBatteryOptimizationSettings(context: Context) {
-        runCatching {
+        val generalSolved = runCatching {
             val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+
+        if (!generalSolved) {
+            runCatching {
+                val appDetails = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", context.packageName, null)
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(appDetails)
+            }
         }
     }
 

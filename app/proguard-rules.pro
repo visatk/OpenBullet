@@ -23,3 +23,10 @@
 -keepclassmembers,allowshrinking,allowobfuscation interface com.example.network.OpenBulletApiService {
     <methods>;
 }
+
+# WorkManager CoroutineWorkers & custom WorkerFactory
+-keep class com.example.worker.** { *; }
+
+# Room database entities
+-keep class com.example.data.local.*Entity { *; }
+

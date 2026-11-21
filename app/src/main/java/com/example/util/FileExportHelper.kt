@@ -84,8 +84,11 @@ object FileExportHelper {
         }.getOrDefault(false)
     }
 
+    private const val MAX_IMPORT_CHARS = 8 * 1024 * 1024 // 8 MB safety bound for low-RAM devices
+
     /**
-     * Reads UTF-8 text and display filename from a SAF document URI on [Dispatchers.IO].
+     * Reads UTF-8 text and display filename from a SAF document URI on [Dispatchers.IO]
+     * with an 8 MB safety cap to prevent OutOfMemoryError on low-memory devices.
      */
     suspend fun readTextFromUri(
         context: Context,
@@ -96,7 +99,17 @@ object FileExportHelper {
             val displayName = resolveDisplayName(context, uri) ?: fallbackName
             val content = context.contentResolver.openInputStream(uri)
                 ?.bufferedReader(Charsets.UTF_8)
-                ?.use { it.readText() }
+                ?.use { reader ->
+                    val sb = StringBuilder()
+                    val buf = CharArray(8192)
+                    var read: Int
+                    while (reader.read(buf).also { read = it } != -1) {
+                        val remaining = MAX_IMPORT_CHARS - sb.length
+                        if (remaining <= 0) break
+                        sb.append(buf, 0, minOf(read, remaining))
+                    }
+                    sb.toString()
+                }
                 .orEmpty()
             if (content.isEmpty()) null else displayName to content
         }.getOrNull()

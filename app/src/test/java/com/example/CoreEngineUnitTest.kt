@@ -156,7 +156,14 @@ class CoreEngineUnitTest {
                 KEYCHECK
                   KEYCHAIN Success OR
                     KEY "HTTP/200"
-            """.trimIndent()
+            """.trimIndent(),
+            version = "2.4",
+            description = "Multi-part GitHub validator with custom DoP",
+            suggestedBots = 16,
+            maxRetries = 5,
+            timeoutSec = 15,
+            customUserAgent = "OpenBullet-Workstation/2.4",
+            maxProxyUses = 12
         )
 
         val loliText = ConfigFileCodec.serializeToLoli(sample)
@@ -166,16 +173,34 @@ class CoreEngineUnitTest {
 
         val parsedFromLoli = ConfigFileCodec.parseImportPayload(loliText)
         assertEquals(1, parsedFromLoli.size)
-        assertEquals("GitHub API Check", parsedFromLoli.first().name)
-        assertEquals("DevTester", parsedFromLoli.first().author)
-        assertEquals("API", parsedFromLoli.first().category)
-        assertEquals("Mail:Pass", parsedFromLoli.first().wordlistType)
-        assertTrue(parsedFromLoli.first().scriptPreview.contains("https://httpbin.org/get?user=<USER>"))
+        val loliCfg = parsedFromLoli.first()
+        assertEquals("GitHub API Check", loliCfg.name)
+        assertEquals("DevTester", loliCfg.author)
+        assertEquals("API", loliCfg.category)
+        assertEquals("Mail:Pass", loliCfg.wordlistType)
+        assertEquals("2.4", loliCfg.version)
+        assertEquals("Multi-part GitHub validator with custom DoP", loliCfg.description)
+        assertEquals(16, loliCfg.suggestedBots)
+        assertEquals(5, loliCfg.maxRetries)
+        assertEquals(15, loliCfg.timeoutSec)
+        assertEquals("OpenBullet-Workstation/2.4", loliCfg.customUserAgent)
+        assertEquals(12, loliCfg.maxProxyUses)
+        assertEquals("2.4", loliCfg.metadata.version)
+        assertEquals(16, loliCfg.executionSettings.suggestedBots)
+        assertTrue(loliCfg.scriptPreview.contains("https://httpbin.org/get?user=<USER>"))
 
         val jsonBundle = ConfigFileCodec.serializeListToJson(listOf(sample))
         val parsedFromJson = ConfigFileCodec.parseImportPayload(jsonBundle)
         assertEquals(1, parsedFromJson.size)
-        assertEquals("GitHub API Check", parsedFromJson.first().name)
+        val jsonCfg = parsedFromJson.first()
+        assertEquals("GitHub API Check", jsonCfg.name)
+        assertEquals("2.4", jsonCfg.version)
+        assertEquals("Multi-part GitHub validator with custom DoP", jsonCfg.description)
+        assertEquals(16, jsonCfg.suggestedBots)
+        assertEquals(5, jsonCfg.maxRetries)
+        assertEquals(15, jsonCfg.timeoutSec)
+        assertEquals("OpenBullet-Workstation/2.4", jsonCfg.customUserAgent)
+        assertEquals(12, jsonCfg.maxProxyUses)
     }
 
     @Test
@@ -242,4 +267,297 @@ class CoreEngineUnitTest {
         assertEquals(1, unpacked.first().id)
         assertEquals("user1@example.com:pass1", unpacked.first().data)
     }
+
+    @Test
+    fun `dynamicParallelTaskEngine scales DoP dynamically and applies AIMD backpressure`() = kotlinx.coroutines.runBlocking {
+        val items = (1..48).toList()
+        val processedCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val engine = com.example.network.DynamicParallelTaskEngine<Int>(
+            initialDoP = 2,
+            maxDoP = 12,
+            adaptiveScalingEnabled = true
+        )
+
+        engine.executeAll(items = items) { _, _, item ->
+            val current = processedCount.incrementAndGet()
+            if (current == 6) {
+                engine.setTargetDoP(8)
+            } else if (current == 24) {
+                engine.setTargetDoP(3)
+            }
+            engine.recordTaskOutcome(latencyMs = 12L, isCongestedOrRateLimited = (item % 15 == 0))
+            kotlinx.coroutines.delay(4L)
+        }
+
+        assertEquals(48, processedCount.get())
+        assertEquals(3, engine.currentTargetDoP)
+        assertTrue(engine.currentEffectiveDoP in 1..3)
+    }
+
+    @Test
+    fun `rawTcpProxyTunnel tunnels HTTP CONNECT SOCKS4a and SOCKS5 raw TCP streams`() {
+        // 1. Test HTTP CONNECT tunnel with Basic Auth
+        java.net.ServerSocket(0).use { server ->
+            val port = server.localPort
+            val serverThread = Thread {
+                server.accept().use { client ->
+                    val reader = client.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+                    val requestLines = mutableListOf<String>()
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        requestLines.add(line)
+                    }
+                    val hasConnect = requestLines.firstOrNull()?.startsWith("CONNECT target.local:443 HTTP/1.1") == true
+                    val hasAuth = requestLines.any { it.startsWith("Proxy-Authorization: Basic ") }
+                    val out = client.getOutputStream()
+                    if (hasConnect && hasAuth) {
+                        out.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                        out.flush()
+                        val payload = ByteArray(4)
+                        client.getInputStream().read(payload)
+                        out.write("PONG".toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } else {
+                        out.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                        out.flush()
+                    }
+                }
+            }
+            serverThread.start()
+
+            val proxy = com.example.model.ProxyItem(
+                id = "p-http",
+                host = "127.0.0.1",
+                port = port,
+                protocol = com.example.model.ProxyProtocol.HTTP,
+                pingMs = null,
+                country = "Local",
+                status = com.example.model.ProxyStatus.AVAILABLE,
+                username = "alice",
+                password = "secret"
+            )
+            com.example.network.RawTcpProxyTunnel.openConnection(
+                targetHost = "target.local",
+                targetPort = 443,
+                proxy = proxy,
+                timeoutMs = 3000
+            ).use { sock ->
+                sock.getOutputStream().write("PING".toByteArray(Charsets.UTF_8))
+                sock.getOutputStream().flush()
+                val reply = sock.getInputStream().readBytes().toString(Charsets.UTF_8)
+                assertEquals("PONG", reply)
+            }
+            serverThread.join(2000)
+        }
+
+        // 2. Test SOCKS4a tunnel
+        java.net.ServerSocket(0).use { server ->
+            val port = server.localPort
+            val serverThread = Thread {
+                server.accept().use { client ->
+                    val input = client.getInputStream()
+                    val header = ByteArray(8)
+                    input.read(header)
+                    while (input.read() > 0) { /* userId */ }
+                    while (input.read() > 0) { /* host */ }
+                    val out = client.getOutputStream()
+                    out.write(byteArrayOf(0x00, 0x5A, 0x00, 0x50, 127, 0, 0, 1))
+                    out.flush()
+                    out.write("SOCKS4A_OK".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+            }
+            serverThread.start()
+
+            val proxy = com.example.model.ProxyItem(
+                id = "p-s4",
+                host = "127.0.0.1",
+                port = port,
+                protocol = com.example.model.ProxyProtocol.SOCKS4,
+                pingMs = null,
+                country = "Local",
+                status = com.example.model.ProxyStatus.AVAILABLE,
+                username = "op"
+            )
+            com.example.network.RawTcpProxyTunnel.openConnection(
+                targetHost = "internal.service.local",
+                targetPort = 80,
+                proxy = proxy,
+                timeoutMs = 3000
+            ).use { sock ->
+                val reply = sock.getInputStream().readBytes().toString(Charsets.UTF_8)
+                assertEquals("SOCKS4A_OK", reply)
+            }
+            serverThread.join(2000)
+        }
+
+        // 3. Test SOCKS5 tunnel with RFC 1929 Username/Password auth
+        java.net.ServerSocket(0).use { server ->
+            val port = server.localPort
+            val serverThread = Thread {
+                server.accept().use { client ->
+                    val input = client.getInputStream()
+                    val out = client.getOutputStream()
+                    val greeting = ByteArray(4)
+                    input.read(greeting)
+                    out.write(byteArrayOf(0x05, 0x02))
+                    out.flush()
+
+                    val authVer = input.read()
+                    val uLen = input.read()
+                    val uBytes = ByteArray(uLen)
+                    input.read(uBytes)
+                    val pLen = input.read()
+                    val pBytes = ByteArray(pLen)
+                    input.read(pBytes)
+                    val authOk = authVer == 1 &&
+                        String(uBytes, Charsets.UTF_8) == "socksUser" &&
+                        String(pBytes, Charsets.UTF_8) == "socksPass"
+                    out.write(byteArrayOf(0x01, if (authOk) 0x00 else 0x01))
+                    out.flush()
+
+                    val reqHead = ByteArray(4)
+                    input.read(reqHead)
+                    val domainLen = input.read()
+                    val domainBytes = ByteArray(domainLen + 2)
+                    input.read(domainBytes)
+
+                    out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x50))
+                    out.flush()
+                    out.write("SOCKS5_OK".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+            }
+            serverThread.start()
+
+            val proxy = com.example.model.ProxyItem(
+                id = "p-s5",
+                host = "127.0.0.1",
+                port = port,
+                protocol = com.example.model.ProxyProtocol.SOCKS5,
+                pingMs = null,
+                country = "Local",
+                status = com.example.model.ProxyStatus.AVAILABLE,
+                username = "socksUser",
+                password = "socksPass"
+            )
+            com.example.network.RawTcpProxyTunnel.openConnection(
+                targetHost = "api.target.local",
+                targetPort = 8080,
+                proxy = proxy,
+                timeoutMs = 3000
+            ).use { sock ->
+                val reply = sock.getInputStream().readBytes().toString(Charsets.UTF_8)
+                assertEquals("SOCKS5_OK", reply)
+            }
+            serverThread.join(2000)
+        }
+    }
+
+    @Test
+    fun `httpExecutionEngine executes raw TCP request protocol over local socket`() {
+        java.net.ServerSocket(0).use { server ->
+            val port = server.localPort
+            val serverThread = Thread {
+                server.accept().use { client ->
+                    val buf = ByteArray(128)
+                    val n = client.getInputStream().read(buf)
+                    val received = if (n > 0) String(buf, 0, n, Charsets.UTF_8) else ""
+                    val out = client.getOutputStream()
+                    out.write("220-TCP-BANNER [user=$received]".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+            }
+            serverThread.start()
+
+            val script = """
+                REQUEST TCP "tcp://127.0.0.1:$port"
+                CONTENT "HELO <USER>"
+                PARSE "<SOURCE>" LR "[user=HELO " "]" -> CAP "EchoUser"
+                KEYCHECK
+                  KEYCHAIN Success OR
+                    KEY "220-TCP-BANNER"
+            """.trimIndent()
+
+            val debugRes = HttpExecutionEngine.executeDebug(
+                rawLine = "tcp_operator:pass99",
+                scriptText = script,
+                timeoutSec = 3,
+                proxyItem = null
+            )
+            assertEquals("Trace: ${debugRes.traceLogs}", "HIT", debugRes.outcomeType)
+            assertEquals("Body: ${debugRes.responseBodyPreview} | Trace: ${debugRes.traceLogs}", "tcp_operator", debugRes.captures["EchoUser"])
+            serverThread.join(2000)
+        }
+    }
+
+    @Test
+    fun `jobOrchestrator coordinates wordlist loop proxy rotation dynamic DoP and block pipeline`() = kotlinx.coroutines.runBlocking {
+        val config = com.example.model.ConfigItem(
+            id = "cfg-orch",
+            name = "Orchestrator Test Config",
+            author = "Arch",
+            category = "Test",
+            wordlistType = "Mail:Pass",
+            needsProxies = true,
+            lastModified = "2026-11-21",
+            scriptPreview = """
+                FUNCTION UPPERCASE "<USER>" -> VAR "UPPER_USER"
+                PARSE "<UPPER_USER>" LR "" "" -> CAP "UpperUser"
+                KEYCHECK
+                  KEYCHAIN Success OR
+                    KEY "@hit.com"
+                  KEYCHAIN Custom OR
+                    KEY "@custom.com"
+                  KEYCHAIN Failure OR
+                    KEY "@bad.com"
+            """.trimIndent(),
+            version = "1.2",
+            description = "Orchestrator unit test",
+            suggestedBots = 4,
+            maxRetries = 2,
+            timeoutSec = 5,
+            maxProxyUses = 3
+        )
+
+        val proxies = listOf(
+            com.example.model.ProxyItem("p1", "10.0.0.1", 8080, com.example.model.ProxyProtocol.HTTP, 20, "US", com.example.model.ProxyStatus.AVAILABLE),
+            com.example.model.ProxyItem("p2", "10.0.0.2", 1080, com.example.model.ProxyProtocol.SOCKS5, 18, "DE", com.example.model.ProxyStatus.AVAILABLE)
+        )
+        val combos = listOf(
+            "u1@hit.com:p1",
+            "u2@bad.com:p2",
+            "u3@custom.com:p3",
+            "u4@hit.com:p4",
+            "u5@hit.com:p5",
+            "u6@bad.com:p6"
+        )
+
+        val orchestrator = com.example.network.JobOrchestrator(
+            config = config,
+            wordlistId = "wl-1",
+            wordlistName = "test_combos.txt",
+            lines = combos,
+            startLine = 1,
+            initialBotsCount = 3,
+            initialProxyMode = com.example.model.ProxyMode.ON,
+            allProxies = proxies
+        )
+
+        orchestrator.execute(shouldContinue = { true })
+        val finalBatch = orchestrator.drainTelemetry(
+            markRunning = false,
+            fallbackStatusLog = "Completed"
+        )
+
+        assertEquals(6, finalBatch.currentDone)
+        assertEquals(6, finalBatch.totalCount)
+        assertEquals(3, finalBatch.hits)
+        assertEquals(1, finalBatch.custom)
+        assertEquals(2, finalBatch.bad)
+        assertEquals(4, finalBatch.newHitsToPersist.size)
+        assertTrue(finalBatch.newHitsToPersist.any { it.data == "u1@hit.com:p1" && it.capturedData.contains("Key=@hit.com") })
+    }
 }
+

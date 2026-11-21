@@ -56,10 +56,16 @@ object ConfigFileCodec {
             "Name" to config.name,
             "Author" to config.author,
             "Category" to config.category,
+            "Version" to config.version.ifBlank { "1.0.0" },
+            "AdditionalInfo" to config.description,
             "AllowedWordlist1" to config.wordlistType,
             "NeedsProxies" to config.needsProxies,
-            "LastModified" to config.lastModified,
-            "Version" to "1.0.0"
+            "SuggestedBots" to config.suggestedBots,
+            "MaxRetries" to config.maxRetries,
+            "TimeoutSec" to config.timeoutSec,
+            "CustomUserAgent" to config.customUserAgent,
+            "MaxProxyUses" to config.maxProxyUses,
+            "LastModified" to config.lastModified
         )
         return buildString {
             appendLine("[SETTINGS]")
@@ -84,9 +90,33 @@ object ConfigFileCodec {
             "name" to config.name,
             "author" to config.author,
             "category" to config.category,
+            "version" to config.version,
+            "description" to config.description,
             "wordlistType" to config.wordlistType,
             "needsProxies" to config.needsProxies,
+            "suggestedBots" to config.suggestedBots,
+            "maxRetries" to config.maxRetries,
+            "timeoutSec" to config.timeoutSec,
+            "customUserAgent" to config.customUserAgent,
+            "maxProxyUses" to config.maxProxyUses,
             "lastModified" to config.lastModified,
+            "metadata" to linkedMapOf(
+                "name" to config.name,
+                "author" to config.author,
+                "category" to config.category,
+                "version" to config.version,
+                "description" to config.description,
+                "lastModified" to config.lastModified
+            ),
+            "settings" to linkedMapOf(
+                "wordlistType" to config.wordlistType,
+                "needsProxies" to config.needsProxies,
+                "suggestedBots" to config.suggestedBots,
+                "maxRetries" to config.maxRetries,
+                "timeoutSec" to config.timeoutSec,
+                "customUserAgent" to config.customUserAgent,
+                "maxProxyUses" to config.maxProxyUses
+            ),
             "script" to config.scriptPreview
         )
     }
@@ -176,8 +206,15 @@ object ConfigFileCodec {
         val name = settingsMap?.optNonBlankString("Name", "name") ?: cleanFallback
         val author = settingsMap?.optNonBlankString("Author", "author") ?: "LocalUser"
         val category = settingsMap?.optNonBlankString("Category", "category") ?: "Default"
+        val version = settingsMap?.optNonBlankString("Version", "version") ?: "1.0.0"
+        val description = settingsMap?.optNonBlankString("AdditionalInfo", "Description", "description") ?: ""
         val wordlistType = settingsMap?.optNonBlankString("AllowedWordlist1", "wordlistType") ?: "Mail:Pass"
         val needsProxies = settingsMap?.optBoolean("NeedsProxies", "needsProxies", default = true) ?: true
+        val suggestedBots = settingsMap?.optInt("SuggestedBots", "suggestedBots", default = 8)?.coerceIn(1, 200) ?: 8
+        val maxRetries = settingsMap?.optInt("MaxRetries", "maxRetries", "BanLoopEvasion", default = 3)?.coerceIn(0, 15) ?: 3
+        val timeoutSec = settingsMap?.optInt("TimeoutSec", "timeoutSec", "RequestTimeout", default = 10)?.coerceIn(1, 120) ?: 10
+        val customUserAgent = settingsMap?.optNonBlankString("CustomUserAgent", "customUserAgent") ?: ""
+        val maxProxyUses = settingsMap?.optInt("MaxProxyUses", "maxProxyUses", default = 0)?.coerceAtLeast(0) ?: 0
         val lastModified = settingsMap?.optNonBlankString("LastModified", "lastModified") ?: todayString()
 
         return ConfigItem(
@@ -188,19 +225,71 @@ object ConfigFileCodec {
             wordlistType = wordlistType,
             needsProxies = needsProxies,
             lastModified = lastModified,
-            scriptPreview = scriptRaw.ifBlank { ConfigTemplates.presets.first().script }
+            scriptPreview = scriptRaw.ifBlank { ConfigTemplates.presets.first().script },
+            version = version,
+            description = description,
+            suggestedBots = suggestedBots,
+            maxRetries = maxRetries,
+            timeoutSec = timeoutSec,
+            customUserAgent = customUserAgent,
+            maxProxyUses = maxProxyUses
         )
     }
 
     private fun parseJsonMap(obj: Map<*, *>, fallbackName: String): ConfigItem {
         val cleanFallback = stripConfigExtension(fallbackName, "Imported JSON Config")
+        val nestedMeta = obj["metadata"] as? Map<*, *>
+        val nestedSettings = obj["settings"] as? Map<*, *>
 
-        val name = obj.optNonBlankString("name", "Name") ?: cleanFallback
-        val author = obj.optNonBlankString("author", "Author") ?: "LocalUser"
-        val category = obj.optNonBlankString("category", "Category") ?: "Default"
-        val wordlistType = obj.optNonBlankString("wordlistType", "AllowedWordlist1") ?: "Mail:Pass"
-        val needsProxies = obj.optBoolean("needsProxies", "NeedsProxies", default = true)
-        val lastModified = obj.optNonBlankString("lastModified", "LastModified") ?: todayString()
+        val name = obj.optNonBlankString("name", "Name")
+            ?: nestedMeta?.optNonBlankString("name", "Name")
+            ?: cleanFallback
+        val author = obj.optNonBlankString("author", "Author")
+            ?: nestedMeta?.optNonBlankString("author", "Author")
+            ?: "LocalUser"
+        val category = obj.optNonBlankString("category", "Category")
+            ?: nestedMeta?.optNonBlankString("category", "Category")
+            ?: "Default"
+        val version = obj.optNonBlankString("version", "Version")
+            ?: nestedMeta?.optNonBlankString("version", "Version")
+            ?: "1.0.0"
+        val description = obj.optNonBlankString("description", "Description", "AdditionalInfo")
+            ?: nestedMeta?.optNonBlankString("description", "Description")
+            ?: ""
+        val wordlistType = obj.optNonBlankString("wordlistType", "AllowedWordlist1")
+            ?: nestedSettings?.optNonBlankString("wordlistType", "AllowedWordlist1")
+            ?: "Mail:Pass"
+        val needsProxies = if (obj.containsKey("needsProxies") || obj.containsKey("NeedsProxies")) {
+            obj.optBoolean("needsProxies", "NeedsProxies", default = true)
+        } else {
+            nestedSettings?.optBoolean("needsProxies", "NeedsProxies", default = true) ?: true
+        }
+        val suggestedBots = (
+            obj.optIntOrNull("suggestedBots", "SuggestedBots")
+                ?: nestedSettings?.optIntOrNull("suggestedBots", "SuggestedBots")
+                ?: 8
+            ).coerceIn(1, 200)
+        val maxRetries = (
+            obj.optIntOrNull("maxRetries", "MaxRetries")
+                ?: nestedSettings?.optIntOrNull("maxRetries", "MaxRetries")
+                ?: 3
+            ).coerceIn(0, 15)
+        val timeoutSec = (
+            obj.optIntOrNull("timeoutSec", "TimeoutSec")
+                ?: nestedSettings?.optIntOrNull("timeoutSec", "TimeoutSec")
+                ?: 10
+            ).coerceIn(1, 120)
+        val customUserAgent = obj.optNonBlankString("customUserAgent", "CustomUserAgent")
+            ?: nestedSettings?.optNonBlankString("customUserAgent", "CustomUserAgent")
+            ?: ""
+        val maxProxyUses = (
+            obj.optIntOrNull("maxProxyUses", "MaxProxyUses")
+                ?: nestedSettings?.optIntOrNull("maxProxyUses", "MaxProxyUses")
+                ?: 0
+            ).coerceAtLeast(0)
+        val lastModified = obj.optNonBlankString("lastModified", "LastModified")
+            ?: nestedMeta?.optNonBlankString("lastModified", "LastModified")
+            ?: todayString()
         val script = obj.optNonBlankString("script", "scriptPreview", "Script")
             ?: ConfigTemplates.presets.first().script
 
@@ -212,7 +301,14 @@ object ConfigFileCodec {
             wordlistType = wordlistType,
             needsProxies = needsProxies,
             lastModified = lastModified,
-            scriptPreview = script
+            scriptPreview = script,
+            version = version,
+            description = description,
+            suggestedBots = suggestedBots,
+            maxRetries = maxRetries,
+            timeoutSec = timeoutSec,
+            customUserAgent = customUserAgent,
+            maxProxyUses = maxProxyUses
         )
     }
 
@@ -236,6 +332,22 @@ object ConfigFileCodec {
             }
         }
         return default
+    }
+
+    private fun Map<*, *>.optInt(vararg keys: String, default: Int): Int =
+        optIntOrNull(*keys) ?: default
+
+    private fun Map<*, *>.optIntOrNull(vararg keys: String): Int? {
+        for (key in keys) {
+            if (!this.containsKey(key)) continue
+            val parsed = when (val value = this[key]) {
+                is Number -> value.toInt()
+                is String -> value.trim().toDoubleOrNull()?.toInt()
+                else -> null
+            }
+            if (parsed != null) return parsed
+        }
+        return null
     }
 
     private fun stripConfigExtension(rawName: String, defaultName: String): String {

@@ -128,8 +128,18 @@ class ConfigsViewModel(
 
     fun useInRunner(config: ConfigItem) {
         _uiState.update { it.copy(activeRunnerConfigId = config.id) }
-        viewModelScope.launch { repository.saveSettings { it.copy(selectedConfigId = config.id) } }
-        _events.tryEmit(UiEvent.ShowSnackbar("Loaded '${config.name}' into Runner"))
+        val suggestedDoP = config.suggestedBots.coerceIn(1, 200)
+        viewModelScope.launch {
+            repository.saveSettings {
+                it.copy(
+                    selectedConfigId = config.id,
+                    botsCount = suggestedDoP
+                )
+            }
+        }
+        _events.tryEmit(
+            UiEvent.ShowSnackbar("Loaded '${config.name}' (v${config.version}, DoP=$suggestedDoP) into Runner")
+        )
     }
 
     fun addConfig(
@@ -281,7 +291,9 @@ class ConfigsViewModel(
         author: String? = null,
         category: String? = null,
         wordlistType: String? = null,
-        needsProxies: Boolean? = null
+        needsProxies: Boolean? = null,
+        version: String? = null,
+        description: String? = null
     ) {
         _uiState.update { current ->
             val ed = current.editor ?: return@update current
@@ -292,6 +304,30 @@ class ConfigsViewModel(
                     category = category ?: ed.category,
                     wordlistType = wordlistType ?: ed.wordlistType,
                     needsProxies = needsProxies ?: ed.needsProxies,
+                    version = version ?: ed.version,
+                    description = description ?: ed.description,
+                    hasUnsavedChanges = true
+                )
+            )
+        }
+    }
+
+    fun updateEditorExecutionSettings(
+        suggestedBots: Int? = null,
+        maxRetries: Int? = null,
+        timeoutSec: Int? = null,
+        customUserAgent: String? = null,
+        maxProxyUses: Int? = null
+    ) {
+        _uiState.update { current ->
+            val ed = current.editor ?: return@update current
+            current.copy(
+                editor = ed.copy(
+                    suggestedBots = (suggestedBots ?: ed.suggestedBots).coerceIn(1, 200),
+                    maxRetries = (maxRetries ?: ed.maxRetries).coerceIn(0, 15),
+                    timeoutSec = (timeoutSec ?: ed.timeoutSec).coerceIn(1, 120),
+                    customUserAgent = customUserAgent ?: ed.customUserAgent,
+                    maxProxyUses = (maxProxyUses ?: ed.maxProxyUses).coerceAtLeast(0),
                     hasUnsavedChanges = true
                 )
             )
@@ -371,12 +407,14 @@ class ConfigsViewModel(
         }
 
         viewModelScope.launch {
+            val effectiveTimeout = if (ed.timeoutSec > 0) ed.timeoutSec else requestTimeoutSec
             val result = debugConfigScriptUseCase(
                 rawTestInput = ed.testDataInput,
                 scriptText = scriptText,
-                timeoutSec = requestTimeoutSec,
+                timeoutSec = effectiveTimeout,
                 useProxy = ed.debugUseProxy,
-                availableProxies = currentProxies
+                availableProxies = currentProxies,
+                customUserAgent = ed.customUserAgent
             )
             _uiState.update { cur ->
                 val curEd = cur.editor ?: return@update cur
@@ -397,7 +435,14 @@ class ConfigsViewModel(
             wordlistType = ed.wordlistType.trim().ifEmpty { "Default" },
             needsProxies = ed.needsProxies,
             lastModified = DateTimeFormats.formatDateNow(),
-            scriptPreview = finalScript
+            scriptPreview = finalScript,
+            version = ed.version.trim().ifEmpty { "1.0.0" },
+            description = ed.description.trim(),
+            suggestedBots = ed.suggestedBots.coerceIn(1, 200),
+            maxRetries = ed.maxRetries.coerceIn(0, 15),
+            timeoutSec = ed.timeoutSec.coerceIn(1, 120),
+            customUserAgent = ed.customUserAgent.trim(),
+            maxProxyUses = ed.maxProxyUses.coerceAtLeast(0)
         )
         exportSingleConfig(tempConfig, ConfigExportFormat.LOLI)
     }
@@ -414,13 +459,25 @@ class ConfigsViewModel(
             wordlistType = ed.wordlistType.trim().ifEmpty { "Default" },
             needsProxies = ed.needsProxies,
             lastModified = DateTimeFormats.formatDateNow(),
-            scriptPreview = finalScript
+            scriptPreview = finalScript,
+            version = ed.version.trim().ifEmpty { "1.0.0" },
+            description = ed.description.trim(),
+            suggestedBots = ed.suggestedBots.coerceIn(1, 200),
+            maxRetries = ed.maxRetries.coerceIn(0, 15),
+            timeoutSec = ed.timeoutSec.coerceIn(1, 120),
+            customUserAgent = ed.customUserAgent.trim(),
+            maxProxyUses = ed.maxProxyUses.coerceAtLeast(0)
         )
 
         viewModelScope.launch {
             repository.saveConfig(config)
             if (loadInRunner) {
-                repository.saveSettings { it.copy(selectedConfigId = config.id) }
+                repository.saveSettings {
+                    it.copy(
+                        selectedConfigId = config.id,
+                        botsCount = config.suggestedBots.coerceIn(1, 200)
+                    )
+                }
             }
         }
 
@@ -433,7 +490,7 @@ class ConfigsViewModel(
         }
         _events.tryEmit(
             UiEvent.ShowSnackbar(
-                if (loadInRunner) "Saved & loaded '$cleanName'" else "Saved config '$cleanName'"
+                if (loadInRunner) "Saved & loaded '$cleanName' (DoP=${config.suggestedBots})" else "Saved config '$cleanName'"
             )
         )
         return loadInRunner

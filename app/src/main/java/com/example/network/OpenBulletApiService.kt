@@ -69,6 +69,23 @@ class InMemoryCookieJar : CookieJar {
     }
 }
 
+/**
+ * Preserves unresolved domain names on [InetAddress] so [ProxiedTcpSocket] and [RawTcpProxyTunnel]
+ * can forward the hostname directly over SOCKS5 (ATYP_DOMAIN), SOCKS4a, or HTTP CONNECT
+ * without leaking or blocking on local DNS resolution.
+ */
+object ProxyRemoteDns : okhttp3.Dns {
+    private val ipv4Literal = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+
+    override fun lookup(hostname: String): List< java.net.InetAddress> {
+        val trimmed = hostname.trim().removeSurrounding("[", "]")
+        if (ipv4Literal.matches(trimmed) || trimmed.contains(':')) {
+            return okhttp3.Dns.SYSTEM.lookup(trimmed)
+        }
+        return listOf(java.net.InetAddress.getByAddress(trimmed, byteArrayOf(0, 0, 0, 1)))
+    }
+}
+
 object OpenBulletNetworkClient {
 
     private val moshi: Moshi by lazy {
@@ -90,7 +107,7 @@ object OpenBulletNetworkClient {
     private val highThroughputDispatcher: okhttp3.Dispatcher by lazy {
         okhttp3.Dispatcher().apply {
             maxRequests = 256
-            maxRequestsPerHost = 64
+            maxRequestsPerHost = 128
         }
     }
 
@@ -125,6 +142,7 @@ object OpenBulletNetworkClient {
         cookieJar: CookieJar? = null
     ): OkHttpClient {
         val safeTimeoutSec = timeoutSec.coerceIn(1, 120).toLong()
+        val timeoutMs = (safeTimeoutSec * 1000L).toInt()
         val builder = baseOkHttpClient.newBuilder()
             .connectTimeout(safeTimeoutSec, TimeUnit.SECONDS)
             .readTimeout(safeTimeoutSec, TimeUnit.SECONDS)
@@ -137,11 +155,27 @@ object OpenBulletNetworkClient {
         }
 
         if (proxyItem != null && proxyItem.host.isNotBlank() && proxyItem.port in 1..65535) {
-            val type = when (proxyItem.protocol) {
-                ProxyProtocol.HTTP -> Proxy.Type.HTTP
-                ProxyProtocol.SOCKS4, ProxyProtocol.SOCKS5 -> Proxy.Type.SOCKS
+            // Route HTTP (CONNECT), SOCKS4/4a, and SOCKS5 connections through our raw TCP tunnel SocketFactory
+            builder.proxy(Proxy.NO_PROXY)
+            builder.dns(ProxyRemoteDns)
+            builder.socketFactory(
+                ProxiedTcpSocketFactory(
+                    proxy = proxyItem,
+                    connectTimeoutMs = timeoutMs
+                )
+            )
+            if (proxyItem.protocol == ProxyProtocol.HTTP && proxyItem.hasAuth) {
+                val credential = okhttp3.Credentials.basic(proxyItem.username, proxyItem.password)
+                builder.proxyAuthenticator { _, response ->
+                    if (response.request.header("Proxy-Authorization") != null) {
+                        null
+                    } else {
+                        response.request.newBuilder()
+                            .header("Proxy-Authorization", credential)
+                            .build()
+                    }
+                }
             }
-            builder.proxy(Proxy(type, InetSocketAddress(proxyItem.host.trim(), proxyItem.port)))
         }
         return builder.build()
     }

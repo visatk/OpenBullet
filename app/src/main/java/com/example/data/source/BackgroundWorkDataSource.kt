@@ -2,6 +2,7 @@ package com.example.data.source
 
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -59,6 +60,7 @@ class WorkManagerBackgroundWorkDataSource(
     ) {
         val request = OneTimeWorkRequestBuilder<RunnerJobWorker>()
             .addTag(RunnerJobWorker.WORK_TAG)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setInputData(
                 workDataOf(
                     RunnerJobWorker.KEY_CONFIG_ID to configId,
@@ -94,6 +96,7 @@ class WorkManagerBackgroundWorkDataSource(
     override fun enqueueProxyCheck(probeUrl: String) {
         val request = OneTimeWorkRequestBuilder<ProxyCheckWorker>()
             .addTag(ProxyCheckWorker.WORK_TAG)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setInputData(workDataOf(ProxyCheckWorker.KEY_PROBE_URL to probeUrl))
             .build()
 
@@ -126,6 +129,8 @@ class WorkManagerBackgroundWorkDataSource(
             retries = data.getInt(RunnerJobWorker.KEY_RETRIES, 0),
             toCheck = data.getInt(RunnerJobWorker.KEY_TO_CHECK, 0),
             cpm = data.getInt(RunnerJobWorker.KEY_CPM, 0),
+            activeDoP = data.getInt(RunnerJobWorker.KEY_ACTIVE_DOP, 0),
+            targetDoP = data.getInt(RunnerJobWorker.KEY_TARGET_DOP, 0),
             elapsedSeconds = data.getLong(RunnerJobWorker.KEY_ELAPSED_SEC, 0L),
             etaSeconds = data.getLong(RunnerJobWorker.KEY_ETA_SEC, 0L),
             workersPacked = data.getString(RunnerJobWorker.KEY_WORKERS_PACKED).orEmpty(),

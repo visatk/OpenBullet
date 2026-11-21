@@ -19,7 +19,8 @@ class DebugConfigScriptUseCase(
         scriptText: String,
         timeoutSec: Int,
         useProxy: Boolean,
-        availableProxies: List<ProxyItem>
+        availableProxies: List<ProxyItem>,
+        customUserAgent: String = ""
     ): ConfigDebugResult = withContext(dispatchers.io) {
         val chosenProxy = if (useProxy) {
             RunnerPacketHelper.chooseDebugProxy(availableProxies)
@@ -30,7 +31,8 @@ class DebugConfigScriptUseCase(
             rawLine = rawTestInput.ifBlank { DEFAULT_TEST_COMBO },
             scriptText = scriptText,
             timeoutSec = timeoutSec,
-            proxyItem = chosenProxy
+            proxyItem = chosenProxy,
+            customUserAgent = customUserAgent
         )
     }
 

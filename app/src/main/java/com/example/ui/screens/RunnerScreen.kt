@@ -1408,6 +1408,12 @@ private fun RunnerStatsPanel(
                 StatLine("Alive:", stats.proxiesAlive.toString(), ObTheme.colors.hit, showDot = true)
                 StatLine("Banned:", stats.proxiesBanned.toString(), ObTheme.colors.banned, showDot = true)
                 StatLine("Bad:", stats.proxiesBad.toString(), ObTheme.colors.bad, showDot = true)
+                StatLine(
+                    "DoP (Parallel):",
+                    "${stats.activeDoP}/${stats.targetDoP}",
+                    MaterialTheme.colorScheme.secondary,
+                    bold = true
+                )
                 StatLine("CPM:", stats.cpm.toString(), MaterialTheme.colorScheme.primary, bold = true)
                 StatLine("Credit:", stats.credit, MaterialTheme.colorScheme.onSurface, bold = true)
             }

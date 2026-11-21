@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SettingsEntity::class,
         RunnerSessionEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class OpenBulletDatabase : RoomDatabase() {
@@ -48,6 +48,38 @@ abstract class OpenBulletDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE proxies ADD COLUMN username TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE proxies ADD COLUMN password TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN version TEXT NOT NULL DEFAULT '1.0.0'"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN suggestedBots INTEGER NOT NULL DEFAULT 8"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN maxRetries INTEGER NOT NULL DEFAULT 3"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN timeoutSec INTEGER NOT NULL DEFAULT 10"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN customUserAgent TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE configs ADD COLUMN maxProxyUses INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
         fun getInstance(context: Context): OpenBulletDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -55,7 +87,7 @@ abstract class OpenBulletDatabase : RoomDatabase() {
                     OpenBulletDatabase::class.java,
                     "openbullet_workstation.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration(true)
                     .build()
                     .also { instance = it }

@@ -220,9 +220,13 @@ class RunnerViewModel(
                                 (state.resultRows + RunnerPacketHelper.unpackResults(work.resultsPacked)).takeLast(300)
                             } else state.resultRows
 
+                            val resolvedActiveDoP = if (work.activeDoP > 0) work.activeDoP else state.botsCount
+                            val resolvedTargetDoP = if (work.targetDoP > 0) work.targetDoP else state.botsCount
+
                             state.copy(
                                 isRunning = true,
                                 isPaused = false,
+                                activeDoP = resolvedActiveDoP,
                                 progressCurrent = work.progressCurrent,
                                 progressTotal = work.progressTotal,
                                 elapsedSeconds = work.elapsedSeconds,
@@ -237,7 +241,9 @@ class RunnerViewModel(
                                     dataBad = work.bad,
                                     dataRetries = work.retries,
                                     dataToCheck = work.toCheck,
-                                    cpm = work.cpm
+                                    cpm = work.cpm,
+                                    activeDoP = resolvedActiveDoP,
+                                    targetDoP = resolvedTargetDoP
                                 )
                             ).withDerivedResults()
                         }
@@ -258,6 +264,7 @@ class RunnerViewModel(
                             state.copy(
                                 isRunning = false,
                                 isPaused = false,
+                                activeDoP = 0,
                                 etaSeconds = 0L,
                                 workerRows = emptyList(),
                                 progressCurrent = if (wasRunning) work.progressCurrent else state.progressCurrent,
@@ -272,7 +279,9 @@ class RunnerViewModel(
                                         dataBad = work.bad,
                                         dataRetries = work.retries,
                                         dataToCheck = work.toCheck,
-                                        cpm = work.cpm
+                                        cpm = work.cpm,
+                                        activeDoP = 0,
+                                        targetDoP = state.botsCount
                                     )
                                 } else state.stats
                             )
@@ -319,12 +328,31 @@ class RunnerViewModel(
 
     fun updateBotsCountDraft(value: Int) {
         val clamped = value.coerceIn(1, 200)
-        _uiState.update { it.copy(botsCount = clamped) }
+        _uiState.update {
+            it.copy(
+                botsCount = clamped,
+                activeDoP = if (it.isRunning) clamped else it.activeDoP,
+                stats = it.stats.copy(targetDoP = clamped)
+            )
+        }
     }
 
     fun commitBotsCount(value: Int? = null) {
         val clamped = (value ?: _uiState.value.botsCount).coerceIn(1, 200)
-        _uiState.update { it.copy(botsCount = clamped) }
+        _uiState.update { current ->
+            val nextLogs = if (current.isRunning) {
+                appendLog(current, "Dynamic DoP updated live -> $clamped parallel workers.")
+            } else current.consoleLogs
+            current.copy(
+                botsCount = clamped,
+                activeDoP = if (current.isRunning) clamped else current.activeDoP,
+                stats = current.stats.copy(
+                    activeDoP = if (current.isRunning) clamped else current.stats.activeDoP,
+                    targetDoP = clamped
+                ),
+                consoleLogs = nextLogs
+            )
+        }
         viewModelScope.launch { repository.saveSettings { it.copy(botsCount = clamped) } }
     }
 
@@ -504,6 +532,7 @@ class RunnerViewModel(
             it.copy(
                 isRunning = true,
                 isPaused = false,
+                activeDoP = current.botsCount,
                 elapsedSeconds = 0L,
                 etaSeconds = 0L,
                 progressCurrent = (current.startLine - 1).coerceIn(0, list.lineCount),
@@ -519,9 +548,11 @@ class RunnerViewModel(
                     dataBad = 0,
                     dataRetries = 0,
                     dataToCheck = 0,
-                    cpm = 0
+                    cpm = 0,
+                    activeDoP = current.botsCount,
+                    targetDoP = current.botsCount
                 ),
-                consoleLogs = appendLog(it, "Started Runner Pool for '${cfg.name}' (${current.botsCount} bots)...")
+                consoleLogs = appendLog(it, "Started Dynamic DoP Runner Pool for '${cfg.name}' (DoP=${current.botsCount})...")
             )
         }
 

@@ -75,6 +75,43 @@ data class ResultRow(
     val id: String = UUID.randomUUID().toString()
 )
 
+/**
+ * Part 1 of a Multi-Part Config: Descriptive identity & authoring metadata.
+ */
+data class ConfigMetadata(
+    val name: String,
+    val author: String = "LocalUser",
+    val category: String = "Default",
+    val version: String = "1.0.0",
+    val description: String = "",
+    val lastModified: String = ""
+)
+
+/**
+ * Part 2 of a Multi-Part Config: Runtime automation, parallelization (DoP), proxy rotation,
+ * and HTTP/TCP execution settings embedded within the config.
+ */
+data class ConfigExecutionSettings(
+    val wordlistType: String = "Mail:Pass",
+    val needsProxies: Boolean = true,
+    val suggestedBots: Int = 8,
+    val maxRetries: Int = 3,
+    val timeoutSec: Int = 10,
+    val customUserAgent: String = "",
+    val maxProxyUses: Int = 0
+)
+
+/**
+ * Part 3 of a Multi-Part Config: Executable LoliScript source and parsed block pipeline.
+ */
+data class ConfigScriptLogic(
+    val rawScript: String,
+    val blocks: List<ConfigBlock>
+)
+
+/**
+ * Multi-Part Config domain object combining [ConfigMetadata], [ConfigExecutionSettings], and [ConfigScriptLogic].
+ */
 data class ConfigItem(
     val id: String,
     val name: String,
@@ -83,8 +120,36 @@ data class ConfigItem(
     val wordlistType: String,
     val needsProxies: Boolean,
     val lastModified: String,
-    val scriptPreview: String
-)
+    val scriptPreview: String,
+    val version: String = "1.0.0",
+    val description: String = "",
+    val suggestedBots: Int = 8,
+    val maxRetries: Int = 3,
+    val timeoutSec: Int = 10,
+    val customUserAgent: String = "",
+    val maxProxyUses: Int = 0
+) {
+    val metadata: ConfigMetadata
+        get() = ConfigMetadata(
+            name = name,
+            author = author,
+            category = category,
+            version = version,
+            description = description,
+            lastModified = lastModified
+        )
+
+    val executionSettings: ConfigExecutionSettings
+        get() = ConfigExecutionSettings(
+            wordlistType = wordlistType,
+            needsProxies = needsProxies,
+            suggestedBots = suggestedBots.coerceIn(1, 200),
+            maxRetries = maxRetries.coerceIn(0, 15),
+            timeoutSec = timeoutSec.coerceIn(1, 120),
+            customUserAgent = customUserAgent,
+            maxProxyUses = maxProxyUses.coerceAtLeast(0)
+        )
+}
 
 data class WordlistItem(
     val id: String,
@@ -105,8 +170,12 @@ data class ProxyItem(
     val protocol: ProxyProtocol,
     val pingMs: Int?,
     val country: String,
-    val status: ProxyStatus
-)
+    val status: ProxyStatus,
+    val username: String = "",
+    val password: String = ""
+) {
+    val hasAuth: Boolean get() = username.isNotBlank() || password.isNotBlank()
+}
 
 data class HitDbItem(
     val id: String,
@@ -130,6 +199,8 @@ data class RunnerStats(
     val proxiesBanned: Int = 0,
     val proxiesBad: Int = 0,
     val cpm: Int = 0,
+    val activeDoP: Int = 0,
+    val targetDoP: Int = 0,
     val credit: String = "$0"
 )
 
@@ -229,8 +300,15 @@ data class ConfigEditorState(
     val name: String = "",
     val author: String = "LocalUser",
     val category: String = "Default",
+    val version: String = "1.0.0",
+    val description: String = "",
     val wordlistType: String = "Mail:Pass",
     val needsProxies: Boolean = true,
+    val suggestedBots: Int = 8,
+    val maxRetries: Int = 3,
+    val timeoutSec: Int = 10,
+    val customUserAgent: String = "",
+    val maxProxyUses: Int = 0,
     val activeSubTab: ConfigEditorSubTab = ConfigEditorSubTab.STACKER,
     val blocks: List<ConfigBlock> = emptyList(),
     val rawScript: String = "",
@@ -306,6 +384,8 @@ data class RunnerWorkSnapshot(
     val retries: Int = 0,
     val toCheck: Int = 0,
     val cpm: Int = 0,
+    val activeDoP: Int = 0,
+    val targetDoP: Int = 0,
     val elapsedSeconds: Long = 0L,
     val etaSeconds: Long = 0L,
     val workersPacked: String = "",
@@ -376,6 +456,7 @@ data class AppShellUiState(
 data class RunnerUiState(
     val startLine: Int = 1,
     val botsCount: Int = 1,
+    val activeDoP: Int = 0,
     val progressCurrent: Int = 0,
     val progressTotal: Int = 0,
     val proxyMode: ProxyMode = ProxyMode.DEF,

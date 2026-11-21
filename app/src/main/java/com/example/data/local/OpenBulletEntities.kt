@@ -29,6 +29,13 @@ data class ConfigEntity(
     val needsProxies: Boolean,
     val lastModified: String,
     val scriptPreview: String,
+    val version: String = "1.0.0",
+    val description: String = "",
+    val suggestedBots: Int = 8,
+    val maxRetries: Int = 3,
+    val timeoutSec: Int = 10,
+    val customUserAgent: String = "",
+    val maxProxyUses: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun toModel(): ConfigItem = ConfigItem(
@@ -39,7 +46,14 @@ data class ConfigEntity(
         wordlistType = wordlistType,
         needsProxies = needsProxies,
         lastModified = lastModified,
-        scriptPreview = scriptPreview
+        scriptPreview = scriptPreview,
+        version = version,
+        description = description,
+        suggestedBots = suggestedBots,
+        maxRetries = maxRetries,
+        timeoutSec = timeoutSec,
+        customUserAgent = customUserAgent,
+        maxProxyUses = maxProxyUses
     )
 }
 
@@ -84,6 +98,8 @@ data class ProxyEntity(
     val pingMs: Int?,
     val country: String,
     val status: String,
+    val username: String = "",
+    val password: String = "",
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun toModel(): ProxyItem = ProxyItem(
@@ -93,7 +109,9 @@ data class ProxyEntity(
         protocol = runCatching { ProxyProtocol.valueOf(protocol) }.getOrDefault(ProxyProtocol.HTTP),
         pingMs = pingMs,
         country = country,
-        status = runCatching { ProxyStatus.valueOf(status) }.getOrDefault(ProxyStatus.UNTESTED)
+        status = runCatching { ProxyStatus.valueOf(status) }.getOrDefault(ProxyStatus.UNTESTED),
+        username = username,
+        password = password
     )
 }
 

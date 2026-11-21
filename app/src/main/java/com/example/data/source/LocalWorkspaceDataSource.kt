@@ -159,7 +159,9 @@ class RoomWorkspaceDataSource(
                     protocol = it.protocol.name,
                     pingMs = it.pingMs,
                     country = it.country,
-                    status = it.status.name
+                    status = it.status.name,
+                    username = it.username,
+                    password = it.password
                 )
             }
         )
@@ -260,7 +262,14 @@ class RoomWorkspaceDataSource(
         wordlistType = wordlistType,
         needsProxies = needsProxies,
         lastModified = lastModified,
-        scriptPreview = scriptPreview
+        scriptPreview = scriptPreview,
+        version = version,
+        description = description,
+        suggestedBots = suggestedBots,
+        maxRetries = maxRetries,
+        timeoutSec = timeoutSec,
+        customUserAgent = customUserAgent,
+        maxProxyUses = maxProxyUses
     )
 
     private fun HitDbItem.toEntity(): HitDbEntity = HitDbEntity(

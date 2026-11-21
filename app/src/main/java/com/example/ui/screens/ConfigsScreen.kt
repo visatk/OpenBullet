@@ -462,9 +462,16 @@ private fun ConfigScriptPreviewPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "LoliScript Preview",
+                    if (config != null) {
+                        "Multi-Part Config • v${config.version} • DoP ${config.suggestedBots} • ${config.timeoutSec}s"
+                    } else {
+                        "Multi-Part Config Preview"
+                    },
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
@@ -490,6 +497,19 @@ private fun ConfigScriptPreviewPanel(
                     }
                 }
             }
+            if (config != null && config.description.isNotBlank()) {
+                Text(
+                    text = config.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
             HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
             Box(
                 modifier = Modifier
@@ -498,7 +518,7 @@ private fun ConfigScriptPreviewPanel(
                     .padding(12.dp)
             ) {
                 Text(
-                    text = config?.scriptPreview ?: "# Select or create a config in Config Maker.",
+                    text = config?.scriptPreview ?: "# Select or create a multi-part config in Config Maker.",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     color = if (config != null) {
                         MaterialTheme.colorScheme.onSurface

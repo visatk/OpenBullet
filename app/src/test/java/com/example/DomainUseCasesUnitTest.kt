@@ -85,10 +85,14 @@ class DomainUseCasesUnitTest {
         assertEquals(ProxyProtocol.SOCKS5, result.newProxies[0].protocol)
         assertEquals("10.0.0.1", result.newProxies[0].host)
         assertEquals(1080, result.newProxies[0].port)
+        assertEquals("user", result.newProxies[0].username)
+        assertEquals("pass", result.newProxies[0].password)
         assertEquals("2001:db8::1", result.newProxies[1].host)
         assertEquals(9050, result.newProxies[1].port)
         assertEquals("192.168.1.5", result.newProxies[2].host)
         assertEquals(3128, result.newProxies[2].port)
+        assertEquals("authUser", result.newProxies[2].username)
+        assertEquals("authPass", result.newProxies[2].password)
     }
 
     @Test

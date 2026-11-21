@@ -74,7 +74,22 @@ fun ConfigEditorScreen(
     editorState: ConfigEditorState,
     usableProxyCount: Int,
     onBack: () -> Unit,
-    onMetadataChange: (name: String?, author: String?, category: String?, wordlistType: String?, needsProxies: Boolean?) -> Unit,
+    onMetadataChange: (
+        name: String?,
+        author: String?,
+        category: String?,
+        wordlistType: String?,
+        needsProxies: Boolean?,
+        version: String?,
+        description: String?
+    ) -> Unit,
+    onExecutionSettingsChange: (
+        suggestedBots: Int?,
+        maxRetries: Int?,
+        timeoutSec: Int?,
+        customUserAgent: String?,
+        maxProxyUses: Int?
+    ) -> Unit = { _, _, _, _, _ -> },
     onApplyPreset: (ConfigTemplates.TemplatePreset) -> Unit,
     onSelectSubTab: (ConfigEditorSubTab) -> Unit,
     onAddBlock: (String) -> Unit,
@@ -131,7 +146,8 @@ fun ConfigEditorScreen(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = buildString {
-                        append(if (editorState.isNew) "Config Maker" else "Config Editor")
+                        append(if (editorState.isNew) "Multi-Part Config Maker" else "Multi-Part Config Editor")
+                        append(" • v${editorState.version.ifBlank { "1.0" }}")
                         if (editorState.hasUnsavedChanges) append(" • Unsaved")
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -217,13 +233,29 @@ fun ConfigEditorScreen(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Metadata & Starter Presets Panel
+            // Multi-Part Config Panel: Part 1 (Metadata) + Part 2 (Execution Settings)
             ObPanel(backgroundColor = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Part 1 • Config Metadata",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        ObStatusPill(
+                            text = "DoP: ${editorState.suggestedBots} • ${editorState.timeoutSec}s • ${editorState.maxRetries} retries",
+                            tintColor = MaterialTheme.colorScheme.primary,
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = editorState.name,
-                            onValueChange = { onMetadataChange(it, null, null, null, null) },
+                            onValueChange = { onMetadataChange(it, null, null, null, null, null, null) },
                             label = { Text("Config Name") },
                             singleLine = true,
                             colors = editorFieldColors(),
@@ -232,12 +264,21 @@ fun ConfigEditorScreen(
                         )
                         OutlinedTextField(
                             value = editorState.category,
-                            onValueChange = { onMetadataChange(null, null, it, null, null) },
+                            onValueChange = { onMetadataChange(null, null, it, null, null, null, null) },
                             label = { Text("Category") },
                             singleLine = true,
                             colors = editorFieldColors(),
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(0.9f)
+                            modifier = Modifier.weight(0.85f)
+                        )
+                        OutlinedTextField(
+                            value = editorState.version,
+                            onValueChange = { onMetadataChange(null, null, null, null, null, it, null) },
+                            label = { Text("Version") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(0.55f)
                         )
                     }
                     Row(
@@ -246,7 +287,7 @@ fun ConfigEditorScreen(
                     ) {
                         OutlinedTextField(
                             value = editorState.author,
-                            onValueChange = { onMetadataChange(null, it, null, null, null) },
+                            onValueChange = { onMetadataChange(null, it, null, null, null, null, null) },
                             label = { Text("Author") },
                             singleLine = true,
                             colors = editorFieldColors(),
@@ -255,8 +296,74 @@ fun ConfigEditorScreen(
                         )
                         OutlinedTextField(
                             value = editorState.wordlistType,
-                            onValueChange = { onMetadataChange(null, null, null, it, null) },
+                            onValueChange = { onMetadataChange(null, null, null, it, null, null, null) },
                             label = { Text("Wordlist Type") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    OutlinedTextField(
+                        value = editorState.description,
+                        onValueChange = { onMetadataChange(null, null, null, null, null, null, it) },
+                        label = { Text("Description / Notes") },
+                        singleLine = true,
+                        colors = editorFieldColors(),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        "Part 2 • Execution Settings & Parallelization (DoP)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = editorState.suggestedBots.toString(),
+                            onValueChange = { raw ->
+                                val parsed = raw.filter { it.isDigit() }.toIntOrNull()
+                                if (parsed != null) onExecutionSettingsChange(parsed, null, null, null, null)
+                            },
+                            label = { Text("Suggested DoP") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = editorState.timeoutSec.toString(),
+                            onValueChange = { raw ->
+                                val parsed = raw.filter { it.isDigit() }.toIntOrNull()
+                                if (parsed != null) onExecutionSettingsChange(null, null, parsed, null, null)
+                            },
+                            label = { Text("Timeout (s)") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = editorState.maxRetries.toString(),
+                            onValueChange = { raw ->
+                                val parsed = raw.filter { it.isDigit() }.toIntOrNull()
+                                if (parsed != null) onExecutionSettingsChange(null, parsed, null, null, null)
+                            },
+                            label = { Text("Max Retries") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = editorState.maxProxyUses.toString(),
+                            onValueChange = { raw ->
+                                val parsed = raw.filter { it.isDigit() }.toIntOrNull()
+                                if (parsed != null) onExecutionSettingsChange(null, null, null, null, parsed)
+                            },
+                            label = { Text("Max Proxy Uses") },
                             singleLine = true,
                             colors = editorFieldColors(),
                             shape = RoundedCornerShape(8.dp),
@@ -266,21 +373,30 @@ fun ConfigEditorScreen(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        OutlinedTextField(
+                            value = editorState.customUserAgent,
+                            onValueChange = { onExecutionSettingsChange(null, null, null, it, null) },
+                            label = { Text("Custom User-Agent (optional)") },
+                            singleLine = true,
+                            colors = editorFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.clickable {
-                                onMetadataChange(null, null, null, null, !editorState.needsProxies)
+                                onMetadataChange(null, null, null, null, !editorState.needsProxies, null, null)
                             }
                         ) {
                             Checkbox(
                                 checked = editorState.needsProxies,
-                                onCheckedChange = { onMetadataChange(null, null, null, null, it) },
+                                onCheckedChange = { onMetadataChange(null, null, null, null, it, null, null) },
                                 colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
                             )
                             Text(
-                                "Requires Proxies (DEF mode)",
+                                "Needs Proxies",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -373,7 +489,7 @@ fun ConfigEditorScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Quick Snippets", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Part 3 • Script Logic & Quick Snippets", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         ObStatusPill(
                             text = "$parsedBlockCount parsed blocks",
                             tintColor = if (parsedBlockCount > 0) ObTheme.colors.hit else ObTheme.colors.custom,
@@ -383,6 +499,7 @@ fun ConfigEditorScreen(
                     val snippets = listOf(
                         "REQUEST GET" to "\nREQUEST GET \"https://httpbin.org/get?user=<USER>\"\nHEADER \"Accept: application/json\"",
                         "REQUEST POST" to "\nREQUEST POST \"https://httpbin.org/post\"\nCONTENT_TYPE \"application/json\"\nCONTENT \"{\\\"user\\\":\\\"<USER>\\\",\\\"pass\\\":\\\"<PASS>\\\"}\"",
+                        "REQUEST TCP" to "\nREQUEST TCP \"tcp://httpbin.org:80\"\nCONTENT \"HEAD / HTTP/1.1\\r\\nHost: httpbin.org\\r\\nConnection: close\\r\\n\\r\\n\"",
                         "KEYCHECK" to "\nKEYCHECK\n  KEYCHAIN Success OR\n    KEY \"HTTP/200\"\n  KEYCHAIN Failure OR\n    KEY \"Unauthorized\"",
                         "PARSE LR" to "\nPARSE \"<SOURCE>\" LR \"\\\"origin\\\": \\\"\" \"\\\"\" -> CAP \"Origin\"",
                         "PARSE JSON" to "\nPARSE \"<SOURCE>\" JSON \"origin\" -> CAP \"Origin\"",

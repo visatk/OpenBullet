@@ -152,7 +152,8 @@ private fun RequestBlockFields(
     block: ConfigBlock.RequestBlock,
     onUpdate: (ConfigBlock) -> Unit
 ) {
-    val methods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
+    val methods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "TCP")
+    val isTcp = block.method.equals("TCP", ignoreCase = true) || block.url.startsWith("tcp://", ignoreCase = true)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -161,7 +162,12 @@ private fun RequestBlockFields(
     ) {
         methods.forEach { m ->
             ObBorderedButton(
-                onClick = { onUpdate(block.copy(method = m)) },
+                onClick = {
+                    val updatedUrl = if (m == "TCP" && !block.url.startsWith("tcp://", ignoreCase = true)) {
+                        "tcp://example.com:80"
+                    } else block.url
+                    onUpdate(block.copy(method = m, url = updatedUrl))
+                },
                 isActive = block.method.equals(m, ignoreCase = true),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
@@ -173,7 +179,12 @@ private fun RequestBlockFields(
     OutlinedTextField(
         value = block.url,
         onValueChange = { onUpdate(block.copy(url = it)) },
-        label = { Text("Target URL (supports <USER>, <PASS>, <VAR>)") },
+        label = {
+            Text(
+                if (isTcp) "Target TCP Endpoint (tcp://host:port)"
+                else "Target URL (supports <USER>, <PASS>, <VAR>)"
+            )
+        },
         singleLine = true,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
         colors = editorFieldColors(),
@@ -181,33 +192,11 @@ private fun RequestBlockFields(
         modifier = Modifier.fillMaxWidth()
     )
 
-    OutlinedTextField(
-        value = block.headersText,
-        onValueChange = { onUpdate(block.copy(headersText = it)) },
-        label = { Text("Headers (Key: Value per line)") },
-        minLines = 2,
-        maxLines = 4,
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-        colors = editorFieldColors(),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth()
-    )
-
-    if (block.method.uppercase() in setOf("POST", "PUT", "PATCH", "DELETE")) {
+    if (!isTcp) {
         OutlinedTextField(
-            value = block.contentType,
-            onValueChange = { onUpdate(block.copy(contentType = it)) },
-            label = { Text("Content-Type") },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-            colors = editorFieldColors(),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = block.postBody,
-            onValueChange = { onUpdate(block.copy(postBody = it)) },
-            label = { Text("Request Body") },
+            value = block.headersText,
+            onValueChange = { onUpdate(block.copy(headersText = it)) },
+            label = { Text("Headers (Key: Value per line)") },
             minLines = 2,
             maxLines = 4,
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
@@ -217,16 +206,49 @@ private fun RequestBlockFields(
         )
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.clickable { onUpdate(block.copy(followRedirects = !block.followRedirects)) }
-    ) {
-        Checkbox(
-            checked = block.followRedirects,
-            onCheckedChange = { onUpdate(block.copy(followRedirects = it)) },
-            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+    if (block.method.uppercase() in setOf("POST", "PUT", "PATCH", "DELETE", "TCP") || isTcp) {
+        if (!isTcp) {
+            OutlinedTextField(
+                value = block.contentType,
+                onValueChange = { onUpdate(block.copy(contentType = it)) },
+                label = { Text("Content-Type") },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                colors = editorFieldColors(),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        OutlinedTextField(
+            value = block.postBody,
+            onValueChange = { onUpdate(block.copy(postBody = it)) },
+            label = {
+                Text(
+                    if (isTcp) "Raw TCP Payload (supports <USER>, <PASS>, \\r\\n)"
+                    else "Request Body"
+                )
+            },
+            minLines = 2,
+            maxLines = 4,
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+            colors = editorFieldColors(),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
         )
-        Text("Follow HTTP Redirects", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+    }
+
+    if (!isTcp) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.clickable { onUpdate(block.copy(followRedirects = !block.followRedirects)) }
+        ) {
+            Checkbox(
+                checked = block.followRedirects,
+                onCheckedChange = { onUpdate(block.copy(followRedirects = it)) },
+                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+            )
+            Text("Follow HTTP Redirects", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+        }
     }
 }
 
