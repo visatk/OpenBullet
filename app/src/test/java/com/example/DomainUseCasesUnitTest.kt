@@ -1,22 +1,38 @@
 package com.example
 
+import com.example.di.DispatcherProvider
 import com.example.domain.usecase.CleanWordlistUseCase
 import com.example.domain.usecase.CryptoAndRegexUseCase
+import com.example.domain.usecase.DebugConfigScriptUseCase
 import com.example.domain.usecase.ExportFormatterUseCase
 import com.example.domain.usecase.FormatCombosUseCase
 import com.example.domain.usecase.ParseProxiesUseCase
+import com.example.domain.usecase.RunNativeDiagnosticUseCase
 import com.example.model.HitDbItem
 import com.example.model.ProxyItem
 import com.example.model.ProxyProtocol
 import com.example.model.ProxyStatus
 import com.example.model.ResultTab
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class DomainUseCasesUnitTest {
+
+    private class TestDispatcherProvider(
+        private val dispatcher: CoroutineDispatcher
+    ) : DispatcherProvider {
+        override val io: CoroutineDispatcher get() = dispatcher
+        override val default: CoroutineDispatcher get() = dispatcher
+        override val main: CoroutineDispatcher get() = dispatcher
+    }
 
     @Test
     fun `cleanWordlistUseCase trims removes empty and deduplicates`() {
@@ -107,5 +123,35 @@ class DomainUseCasesUnitTest {
         val exportText = useCase.formatFilteredHits(hits, null, "listB")
         assertTrue(exportText.contains("bob@y.com:456"))
         assertTrue(!exportText.contains("alice@x.com"))
+    }
+
+    @Test
+    fun `debugConfigScriptUseCase and runNativeDiagnosticUseCase execute offline deterministically`() = runTest {
+        val dispatcherProvider = TestDispatcherProvider(StandardTestDispatcher(testScheduler))
+        val debugUseCase = DebugConfigScriptUseCase(dispatcherProvider)
+        val nativeUseCase = RunNativeDiagnosticUseCase(dispatcherProvider)
+
+        val debugResult = debugUseCase(
+            rawTestInput = "alice@example.com:pass123",
+            scriptText = """
+                FUNCTION UPPERCASE "<USER>" -> VAR "UPPER"
+                KEYCHECK
+                  KEYCHAIN Success OR
+                    KEY "@example.com"
+            """.trimIndent(),
+            timeoutSec = 5,
+            useProxy = false,
+            availableProxies = emptyList()
+        )
+        assertEquals("HIT", debugResult.outcomeType)
+        assertEquals("ALICE@EXAMPLE.COM", debugResult.variables["UPPER"])
+
+        val nativeSummary = nativeUseCase(
+            sampleBody = "alice@example.com:pass123\nHTTP/200 {\"ok\":true}",
+            successKey = "HTTP/200",
+            failureKey = "Unauthorized"
+        )
+        assertTrue(nativeSummary.contains("Outcome=HIT"))
+        assertTrue(nativeSummary.contains("Key=HTTP/200"))
     }
 }

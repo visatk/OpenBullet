@@ -197,9 +197,7 @@ private fun WideRunnerLayout(
         state.progressCurrent.toFloat() / state.progressTotal.toFloat()
     } else 0f
     val progressPercent = (progressRatio * 100).toInt()
-    val filteredResults = remember(state.resultRows, state.selectedResultTab) {
-        state.resultRows.filter { it.category == state.selectedResultTab }
-    }
+    val filteredResults = state.filteredResultRows
     val maxStartLine = (state.selectedWordlist?.lineCount ?: 1000).coerceAtLeast(1)
 
     Column(
@@ -353,7 +351,7 @@ private fun WideRunnerLayout(
                         .fillMaxWidth()
                 )
                 ResultFilterAndTimerRow(
-                    resultRows = state.resultRows,
+                    resultCounts = state.resultCounts,
                     selectedTab = state.selectedResultTab,
                     elapsedSeconds = state.elapsedSeconds,
                     etaSeconds = state.etaSeconds,
@@ -424,9 +422,7 @@ private fun CompactRunnerLayout(
         state.progressCurrent.toFloat() / state.progressTotal.toFloat()
     } else 0f
     val progressPercent = (progressRatio * 100).toInt()
-    val filteredResults = remember(state.resultRows, state.selectedResultTab) {
-        state.resultRows.filter { it.category == state.selectedResultTab }
-    }
+    val filteredResults = state.filteredResultRows
     val maxStartLine = (state.selectedWordlist?.lineCount ?: 1000).coerceAtLeast(1)
 
     Column(
@@ -629,7 +625,7 @@ private fun CompactRunnerLayout(
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ResultFilterTabsOnly(
-                        resultRows = state.resultRows,
+                        resultCounts = state.resultCounts,
                         selectedTab = state.selectedResultTab,
                         onSelectTab = onResultTabSelect,
                         modifier = Modifier.fillMaxWidth()
@@ -1057,7 +1053,7 @@ private fun TableHeaderCell(
 
 @Composable
 private fun ResultFilterAndTimerRow(
-    resultRows: List<ResultRow>,
+    resultCounts: Map<ResultTab, Int>,
     selectedTab: ResultTab,
     elapsedSeconds: Long,
     etaSeconds: Long,
@@ -1069,7 +1065,7 @@ private fun ResultFilterAndTimerRow(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         ResultFilterTabsOnly(
-            resultRows = resultRows,
+            resultCounts = resultCounts,
             selectedTab = selectedTab,
             onSelectTab = onSelectTab
         )
@@ -1093,7 +1089,7 @@ private fun ResultFilterAndTimerRow(
 
 @Composable
 private fun ResultFilterTabsOnly(
-    resultRows: List<ResultRow>,
+    resultCounts: Map<ResultTab, Int>,
     selectedTab: ResultTab,
     onSelectTab: (ResultTab) -> Unit,
     modifier: Modifier = Modifier
@@ -1104,7 +1100,7 @@ private fun ResultFilterTabsOnly(
     ) {
         ResultTab.entries.forEach { tab ->
             val accentColor = tab.tintColor()
-            val count = resultRows.count { it.category == tab }
+            val count = resultCounts[tab] ?: 0
             ObBorderedButton(
                 onClick = { onSelectTab(tab) },
                 isActive = selectedTab == tab,

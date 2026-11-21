@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.example.model.ToolsSection
 import com.example.model.ToolsState
@@ -434,9 +436,10 @@ private fun CopyableCryptoLine(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(6.dp))
-            .clickable { onCopy(label, value) }
-            .padding(vertical = 3.dp, horizontal = 4.dp),
+            .clickable(role = Role.Button) { onCopy(label, value) }
+            .padding(vertical = 4.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -452,7 +455,7 @@ private fun CopyableCryptoLine(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .padding(start = 8.dp)
-                .size(14.dp)
+                .size(16.dp)
         )
     }
 }
@@ -462,18 +465,20 @@ private fun ToolCheckRow(label: String, checked: Boolean, onChange: (Boolean) ->
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(6.dp))
-            .clickable { onChange(!checked) }
-            .padding(end = 8.dp)
+            .clickable(role = Role.Checkbox) { onChange(!checked) }
+            .padding(horizontal = 8.dp)
     ) {
         Checkbox(
             checked = checked,
-            onCheckedChange = onChange,
+            onCheckedChange = null,
             colors = CheckboxDefaults.colors(
                 checkedColor = MaterialTheme.colorScheme.primary,
                 uncheckedColor = MaterialTheme.colorScheme.outline
             )
         )
+        Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
     }
 }

@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
@@ -18,10 +19,15 @@ import kotlinx.coroutines.launch
 
 class SettingsViewModel(
     private val repository: OpenBulletRepository,
-    private val soundNotifier: SoundNotifier
+    private val soundNotifier: SoundNotifier,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(SettingsState())
+    private val initialSection = savedStateHandle.get<String>(KEY_ACTIVE_SECTION)
+        ?.let { name -> runCatching { SettingsSection.valueOf(name) }.getOrNull() }
+        ?: SettingsSection.GENERAL
+
+    private val _uiState = MutableStateFlow(SettingsState(activeSection = initialSection))
     val uiState: StateFlow<SettingsState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
@@ -53,6 +59,7 @@ class SettingsViewModel(
     }
 
     fun selectSection(section: SettingsSection) {
+        savedStateHandle[KEY_ACTIVE_SECTION] = section.name
         _uiState.update { it.copy(activeSection = section) }
     }
 
@@ -136,5 +143,9 @@ class SettingsViewModel(
 
     fun testFinishSound() {
         soundNotifier.playAlertTone(isHit = false)
+    }
+
+    companion object {
+        private const val KEY_ACTIVE_SECTION = "settings_active_section"
     }
 }

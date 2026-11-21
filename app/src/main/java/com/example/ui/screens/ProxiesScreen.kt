@@ -74,22 +74,11 @@ fun ProxiesScreen(
 ) {
     var confirmClear by remember { mutableStateOf(false) }
 
-    val visible = remember(state.proxies, state.protocolFilter, state.statusFilter) {
-        state.proxies.filter { proxy ->
-            val matchProto = state.protocolFilter == null || proxy.protocol == state.protocolFilter
-            val matchStatus = state.statusFilter == null || proxy.status == state.statusFilter
-            matchProto && matchStatus
-        }
-    }
-    val aliveCount = remember(state.proxies) { state.proxies.count { it.status == ProxyStatus.AVAILABLE } }
-    val bannedCount = remember(state.proxies) { state.proxies.count { it.status == ProxyStatus.BANNED } }
-    val badCount = remember(state.proxies) {
-        state.proxies.count { it.status == ProxyStatus.BAD || it.status == ProxyStatus.BANNED }
-    }
-    val avgPingMs = remember(state.proxies) {
-        val pings = state.proxies.mapNotNull { it.pingMs }
-        if (pings.isEmpty()) null else pings.average().toInt()
-    }
+    val visible = state.filteredProxies
+    val aliveCount = state.aliveCount
+    val bannedCount = state.bannedCount
+    val badCount = state.badCount
+    val avgPingMs = state.avgPingMs
 
     Box(
         modifier = modifier
@@ -423,3 +412,28 @@ fun ProxiesScreen(
         )
     }
 }
+
+@Composable
+private fun ProxyTelemetryMetric(
+    label: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontFeatureSettings = "tnum"
+            ),
+            color = valueColor
+        )
+    }
+}
+

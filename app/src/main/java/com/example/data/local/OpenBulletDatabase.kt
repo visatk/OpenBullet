@@ -56,7 +56,7 @@ abstract class OpenBulletDatabase : RoomDatabase() {
                     "openbullet_workstation.db"
                 )
                     .addMigrations(MIGRATION_2_3)
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigration(true)
                     .build()
                     .also { instance = it }
             }

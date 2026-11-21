@@ -1,11 +1,13 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
 import com.example.domain.usecase.ExportFormatterUseCase
 import com.example.domain.usecase.ParseProxiesUseCase
 import com.example.model.ProxiesUiState
+import com.example.model.ProxyItem
 import com.example.model.ProxyProtocol
 import com.example.model.ProxyStatus
 import com.example.model.WorkExecutionState
@@ -15,16 +17,29 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class ProxiesViewModel(
     private val repository: OpenBulletRepository,
     private val parseProxiesUseCase: ParseProxiesUseCase,
-    private val exportFormatterUseCase: ExportFormatterUseCase
+    private val exportFormatterUseCase: ExportFormatterUseCase,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ProxiesUiState())
+    private val initialProtocolFilter = savedStateHandle.get<String>(KEY_PROTOCOL_FILTER)
+        ?.let { name -> runCatching { ProxyProtocol.valueOf(name) }.getOrNull() }
+
+    private val initialStatusFilter = savedStateHandle.get<String>(KEY_STATUS_FILTER)
+        ?.let { name -> runCatching { ProxyStatus.valueOf(name) }.getOrNull() }
+
+    private val _uiState = MutableStateFlow(
+        ProxiesUiState(
+            protocolFilter = initialProtocolFilter,
+            statusFilter = initialStatusFilter
+        )
+    )
     val uiState: StateFlow<ProxiesUiState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
@@ -34,14 +49,17 @@ class ProxiesViewModel(
 
     init {
         viewModelScope.launch {
-            repository.proxiesFlow.collect { list ->
-                _uiState.update { it.copy(proxies = list) }
-            }
-        }
-        viewModelScope.launch {
-            repository.settingsFlow.collect { settings ->
+            combine(
+                repository.proxiesFlow,
+                repository.settingsFlow
+            ) { list, settings ->
+                list to settings
+            }.collect { (list, settings) ->
                 if (settings != null && settings.proxyJudgeUrl.isNotBlank()) {
                     proxyJudgeUrl = settings.proxyJudgeUrl
+                }
+                _uiState.update { current ->
+                    current.withDerivedProxies(proxies = list)
                 }
             }
         }
@@ -88,11 +106,17 @@ class ProxiesViewModel(
     }
 
     fun setProtocolFilter(protocol: ProxyProtocol?) {
-        _uiState.update { it.copy(protocolFilter = protocol) }
+        savedStateHandle[KEY_PROTOCOL_FILTER] = protocol?.name
+        _uiState.update { current ->
+            current.withDerivedProxies(protocolFilter = protocol, updateProtocolFilter = true)
+        }
     }
 
     fun setStatusFilter(status: ProxyStatus?) {
-        _uiState.update { it.copy(statusFilter = status) }
+        savedStateHandle[KEY_STATUS_FILTER] = status?.name
+        _uiState.update { current ->
+            current.withDerivedProxies(statusFilter = status, updateStatusFilter = true)
+        }
     }
 
     fun addProxies(rawText: String, protocol: ProxyProtocol) {
@@ -183,5 +207,37 @@ class ProxiesViewModel(
                 )
             )
         }
+    }
+
+    private fun ProxiesUiState.withDerivedProxies(
+        proxies: List<ProxyItem> = this.proxies,
+        protocolFilter: ProxyProtocol? = this.protocolFilter,
+        statusFilter: ProxyStatus? = this.statusFilter,
+        updateProtocolFilter: Boolean = false,
+        updateStatusFilter: Boolean = false
+    ): ProxiesUiState {
+        val resolvedProto = if (updateProtocolFilter) protocolFilter else this.protocolFilter
+        val resolvedStatus = if (updateStatusFilter) statusFilter else this.statusFilter
+        val filtered = proxies.filter { proxy ->
+            val matchProto = resolvedProto == null || proxy.protocol == resolvedProto
+            val matchStatus = resolvedStatus == null || proxy.status == resolvedStatus
+            matchProto && matchStatus
+        }
+        val pings = proxies.mapNotNull { it.pingMs }
+        return copy(
+            proxies = proxies,
+            filteredProxies = filtered,
+            protocolFilter = resolvedProto,
+            statusFilter = resolvedStatus,
+            aliveCount = proxies.count { it.status == ProxyStatus.AVAILABLE },
+            bannedCount = proxies.count { it.status == ProxyStatus.BANNED },
+            badCount = proxies.count { it.status == ProxyStatus.BAD || it.status == ProxyStatus.BANNED },
+            avgPingMs = if (pings.isEmpty()) null else pings.average().toInt()
+        )
+    }
+
+    companion object {
+        private const val KEY_PROTOCOL_FILTER = "proxies_protocol_filter"
+        private const val KEY_STATUS_FILTER = "proxies_status_filter"
     }
 }

@@ -1,9 +1,12 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
+import com.example.domain.usecase.ManageRunnerJobUseCase
 import com.example.model.ConfigItem
+import com.example.model.PersistedSettingsSnapshot
 import com.example.model.ProxyMode
 import com.example.model.ProxyStatus
 import com.example.model.ResultTab
@@ -20,16 +23,26 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class RunnerViewModel(
     private val repository: OpenBulletRepository,
-    private val soundNotifier: SoundNotifier
+    private val soundNotifier: SoundNotifier,
+    private val manageRunnerJobUseCase: ManageRunnerJobUseCase = ManageRunnerJobUseCase(repository),
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
+    private val initialResultTab = savedStateHandle.get<String>(KEY_SELECTED_RESULT_TAB)
+        ?.let { name -> runCatching { ResultTab.valueOf(name) }.getOrNull() }
+        ?: ResultTab.HITS
+
     private val _uiState = MutableStateFlow(
-        RunnerUiState(nativeEngineBanner = NativeScannerBridge.engineBanner())
+        RunnerUiState(
+            selectedResultTab = initialResultTab,
+            nativeEngineBanner = NativeScannerBridge.engineBanner()
+        )
     )
     val uiState: StateFlow<RunnerUiState> = _uiState.asStateFlow()
 
@@ -38,6 +51,7 @@ class RunnerViewModel(
 
     private var savedSelectedConfigId: String? = null
     private var savedSelectedWordlistId: String? = null
+    private var lastAppliedSettings: PersistedSettingsSnapshot? = null
     private var showTimestamps: Boolean = false
     private var soundOnHit: Boolean = true
     private var soundOnFinish: Boolean = false
@@ -57,82 +71,74 @@ class RunnerViewModel(
 
     private fun observeDataStreams() {
         viewModelScope.launch {
-            repository.configsFlow.collect { configs ->
+            combine(
+                repository.configsFlow,
+                repository.wordlistsFlow,
+                repository.proxiesFlow,
+                repository.settingsFlow
+            ) { configs, wordlists, proxies, settings ->
+                Quadruple(configs, wordlists, proxies, settings)
+            }.collect { (configs, wordlists, proxies, settings) ->
+                val settingsChanged = settings != null && settings != lastAppliedSettings
+                if (settingsChanged) {
+                    lastAppliedSettings = settings
+                    savedSelectedConfigId = settings.selectedConfigId
+                    savedSelectedWordlistId = settings.selectedWordlistId
+                    showTimestamps = settings.showTimestampsInConsole
+                    soundOnHit = settings.soundOnHit
+                    soundOnFinish = settings.soundOnFinish
+                }
+
                 _uiState.update { current ->
-                    val targetCfgId = current.selectedConfig?.id ?: savedSelectedConfigId
-                    val updatedSelected = targetCfgId?.let { id -> configs.firstOrNull { it.id == id } }
+                    val targetCfgId = if (settingsChanged) {
+                        savedSelectedConfigId
+                    } else {
+                        savedSelectedConfigId ?: current.selectedConfig?.id
+                    }
+                    val resolvedCfg = targetCfgId?.let { id -> configs.firstOrNull { it.id == id } }
+
+                    val targetListId = if (settingsChanged) {
+                        savedSelectedWordlistId
+                    } else {
+                        savedSelectedWordlistId ?: current.selectedWordlist?.id
+                    }
+                    val resolvedList = targetListId?.let { id -> wordlists.firstOrNull { it.id == id } }
+
+                    val maxLine = (resolvedList?.lineCount ?: 1000).coerceAtLeast(1)
+                    val baseStartLine = if (settingsChanged) settings.startLine else current.startLine
+                    val clampedStart = baseStartLine.coerceIn(1, maxLine)
+                    val botsCount = (if (settingsChanged) settings.botsCount else current.botsCount).coerceIn(1, 200)
+                    val proxyMode = if (settingsChanged) settings.proxyMode else current.proxyMode
+
+                    val listChanged = resolvedList?.id != current.selectedWordlist?.id
+                    val nextProgressTotal = if (!current.isRunning && !current.isPaused && resolvedList != null && (current.progressTotal == 0 || listChanged)) {
+                        resolvedList.lineCount
+                    } else {
+                        current.progressTotal
+                    }
+                    val nextDataTotal = if (!current.isRunning && !current.isPaused && resolvedList != null && (current.stats.dataTotal == 0 || listChanged)) {
+                        resolvedList.lineCount
+                    } else {
+                        current.stats.dataTotal
+                    }
+
                     current.copy(
                         configs = configs,
-                        selectedConfig = updatedSelected
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            repository.wordlistsFlow.collect { wordlists ->
-                _uiState.update { current ->
-                    val targetListId = current.selectedWordlist?.id ?: savedSelectedWordlistId
-                    val updatedSelected = targetListId?.let { id -> wordlists.firstOrNull { it.id == id } }
-                    val maxLine = (updatedSelected?.lineCount ?: 1000).coerceAtLeast(1)
-                    val clampedStart = current.startLine.coerceIn(1, maxLine)
-                    current.copy(
                         wordlists = wordlists,
-                        selectedWordlist = updatedSelected,
+                        selectedConfig = resolvedCfg,
+                        selectedWordlist = resolvedList,
                         startLine = clampedStart,
-                        progressTotal = if (!current.isRunning && !current.isPaused && current.progressTotal == 0 && updatedSelected != null) {
-                            updatedSelected.lineCount
-                        } else {
-                            current.progressTotal
-                        },
-                        stats = if (!current.isRunning && !current.isPaused && current.stats.dataTotal == 0 && updatedSelected != null) {
-                            current.stats.copy(dataTotal = updatedSelected.lineCount)
-                        } else {
-                            current.stats
-                        }
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            repository.proxiesFlow.collect { proxies ->
-                _uiState.update { current ->
-                    current.copy(
+                        botsCount = botsCount,
+                        proxyMode = proxyMode,
+                        progressTotal = nextProgressTotal,
                         stats = current.stats.copy(
+                            dataTotal = nextDataTotal,
                             proxiesTotal = proxies.size,
                             proxiesAlive = proxies.count { it.status == ProxyStatus.AVAILABLE },
                             proxiesBanned = proxies.count { it.status == ProxyStatus.BANNED },
                             proxiesBad = proxies.count { it.status == ProxyStatus.BAD }
                         )
                     )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            repository.settingsFlow.collect { settings ->
-                if (settings != null) {
-                    savedSelectedConfigId = settings.selectedConfigId
-                    savedSelectedWordlistId = settings.selectedWordlistId
-                    showTimestamps = settings.showTimestampsInConsole
-                    soundOnHit = settings.soundOnHit
-                    soundOnFinish = settings.soundOnFinish
-
-                    _uiState.update { current ->
-                        val resolvedCfg = current.selectedConfig
-                            ?: settings.selectedConfigId?.let { id -> current.configs.firstOrNull { it.id == id } }
-                        val resolvedList = current.selectedWordlist
-                            ?: settings.selectedWordlistId?.let { id -> current.wordlists.firstOrNull { it.id == id } }
-                        val maxLine = (resolvedList?.lineCount ?: 1000).coerceAtLeast(1)
-                        current.copy(
-                            startLine = settings.startLine.coerceIn(1, maxLine),
-                            botsCount = settings.botsCount.coerceIn(1, 200),
-                            proxyMode = settings.proxyMode,
-                            selectedConfig = resolvedCfg,
-                            selectedWordlist = resolvedList
-                        )
-                    }
                 }
             }
         }
@@ -147,12 +153,13 @@ class RunnerViewModel(
                     if (!current.isRunning && current.progressCurrent == 0 && session.progressTotal > 0 && matchesSelection) {
                         val restoredWorkers = RunnerPacketHelper.unpackWorkers(session.workersPacked)
                         val restoredResults = RunnerPacketHelper.unpackResults(session.resultsPacked)
+                        val nextResults = if (current.resultRows.isEmpty()) restoredResults else current.resultRows
                         current.copy(
                             progressCurrent = session.progressCurrent,
                             progressTotal = session.progressTotal,
                             elapsedSeconds = session.elapsedSeconds,
                             workerRows = if (current.workerRows.isEmpty()) restoredWorkers else current.workerRows,
-                            resultRows = if (current.resultRows.isEmpty()) restoredResults else current.resultRows,
+                            resultRows = nextResults,
                             stats = current.stats.copy(
                                 dataTotal = session.progressTotal,
                                 dataHits = session.hits,
@@ -162,7 +169,7 @@ class RunnerViewModel(
                                 dataToCheck = session.toCheck,
                                 cpm = session.cpm
                             )
-                        )
+                        ).withDerivedResults()
                     } else {
                         current
                     }
@@ -232,7 +239,7 @@ class RunnerViewModel(
                                     dataToCheck = work.toCheck,
                                     cpm = work.cpm
                                 )
-                            )
+                            ).withDerivedResults()
                         }
                     }
 
@@ -329,7 +336,8 @@ class RunnerViewModel(
     }
 
     fun selectResultTab(tab: ResultTab) {
-        _uiState.update { it.copy(selectedResultTab = tab) }
+        savedStateHandle[KEY_SELECTED_RESULT_TAB] = tab.name
+        _uiState.update { it.copy(selectedResultTab = tab).withDerivedResults() }
     }
 
     fun selectConfig(config: ConfigItem?) {
@@ -395,33 +403,45 @@ class RunnerViewModel(
     fun pauseOrResumeRunner() {
         val current = _uiState.value
         if (current.isRunning) {
-            val nextCheckpoint = (current.progressCurrent + 1).coerceIn(1, current.progressTotal.coerceAtLeast(1))
             pausedWorkId = activeWorkId
-            repository.cancelRunnerJob()
-            _uiState.update {
-                it.copy(
-                    isRunning = false,
-                    isPaused = true,
-                    startLine = nextCheckpoint,
-                    etaSeconds = 0L,
-                    workerRows = emptyList(),
-                    consoleLogs = appendLog(it, "Paused Runner at checkpoint line #$nextCheckpoint.")
+            viewModelScope.launch {
+                val nextCheckpoint = manageRunnerJobUseCase.pauseJobAndSaveCheckpoint(
+                    progressCurrent = current.progressCurrent,
+                    progressTotal = current.progressTotal
                 )
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        isPaused = true,
+                        startLine = nextCheckpoint,
+                        etaSeconds = 0L,
+                        workerRows = emptyList(),
+                        consoleLogs = appendLog(it, "Paused Runner at checkpoint line #$nextCheckpoint.")
+                    )
+                }
+                _events.tryEmit(UiEvent.ShowSnackbar("Paused at line #$nextCheckpoint"))
             }
-            _events.tryEmit(UiEvent.ShowSnackbar("Paused at line #$nextCheckpoint"))
-            viewModelScope.launch { repository.saveSettings { it.copy(startLine = nextCheckpoint) } }
             return
         }
 
         if (current.isPaused) {
             val cfg = current.selectedConfig ?: return
             val list = current.selectedWordlist ?: return
-            val checkpointLine = current.startLine.coerceIn(1, list.lineCount.coerceAtLeast(1))
             pausedWorkId = null
             activeWorkId = null
             lastObservedWorkLog = null
             lastWorkerPacket = null
             lastResultPacket = null
+
+            val checkpointLine = manageRunnerJobUseCase.resumeJob(
+                config = cfg,
+                wordlist = list,
+                checkpointLine = current.startLine,
+                botsCount = current.botsCount,
+                proxyMode = current.proxyMode,
+                accumulatedStats = current.stats,
+                elapsedSeconds = current.elapsedSeconds
+            )
 
             _uiState.update {
                 it.copy(
@@ -431,20 +451,6 @@ class RunnerViewModel(
                 )
             }
             _events.tryEmit(UiEvent.ShowSnackbar("Resuming from line #$checkpointLine"))
-
-            repository.enqueueRunnerJob(
-                configId = cfg.id,
-                wordlistId = list.id,
-                startLine = checkpointLine,
-                botsCount = current.botsCount,
-                proxyMode = current.proxyMode,
-                initialHits = current.stats.dataHits,
-                initialCustom = current.stats.dataCustom,
-                initialBad = current.stats.dataBad,
-                initialRetries = current.stats.dataRetries,
-                initialToCheck = current.stats.dataToCheck,
-                initialElapsedSec = current.elapsedSeconds
-            )
         }
     }
 
@@ -452,7 +458,7 @@ class RunnerViewModel(
         val current = _uiState.value
         if (current.isRunning || current.isPaused) {
             pausedWorkId = activeWorkId
-            repository.cancelRunnerJob()
+            manageRunnerJobUseCase.stopJob()
             _uiState.update {
                 it.copy(
                     isRunning = false,
@@ -504,6 +510,8 @@ class RunnerViewModel(
                 progressTotal = list.lineCount,
                 workerRows = emptyList(),
                 resultRows = emptyList(),
+                filteredResultRows = emptyList(),
+                resultCounts = emptyMap(),
                 stats = it.stats.copy(
                     dataTotal = list.lineCount,
                     dataHits = 0,
@@ -517,9 +525,9 @@ class RunnerViewModel(
             )
         }
 
-        repository.enqueueRunnerJob(
-            configId = cfg.id,
-            wordlistId = list.id,
+        manageRunnerJobUseCase.startJob(
+            config = cfg,
+            wordlist = list,
             startLine = current.startLine,
             botsCount = current.botsCount,
             proxyMode = current.proxyMode
@@ -537,8 +545,29 @@ class RunnerViewModel(
         _uiState.update { it.copy(consoleLogs = listOf("Runner initialized successfully!")) }
     }
 
+    private fun RunnerUiState.withDerivedResults(): RunnerUiState {
+        val counts = ResultTab.entries.associateWith { tab ->
+            resultRows.count { it.category == tab }
+        }
+        return copy(
+            filteredResultRows = resultRows.filter { it.category == selectedResultTab },
+            resultCounts = counts
+        )
+    }
+
     private fun appendLog(state: RunnerUiState, message: String): List<String> {
         val line = if (showTimestamps) "[${DateTimeFormats.formatClockNow()}] $message" else message
         return (state.consoleLogs + line).takeLast(120)
+    }
+
+    private data class Quadruple<A, B, C, D>(
+        val first: A,
+        val second: B,
+        val third: C,
+        val fourth: D
+    )
+
+    companion object {
+        private const val KEY_SELECTED_RESULT_TAB = "runner_selected_result_tab"
     }
 }

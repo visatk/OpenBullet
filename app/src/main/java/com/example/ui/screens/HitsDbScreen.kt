@@ -70,19 +70,7 @@ fun HitsDbScreen(
     modifier: Modifier = Modifier
 ) {
     var confirmClear by remember { mutableStateOf(false) }
-
-    val filtered = remember(state.hits, state.typeFilter, state.searchQuery) {
-        val query = state.searchQuery.trim()
-        state.hits.filter { item ->
-            val matchesType = state.typeFilter == null || item.type == state.typeFilter
-            val matchesQuery = query.isEmpty() ||
-                item.data.contains(query, ignoreCase = true) ||
-                item.configName.contains(query, ignoreCase = true) ||
-                item.wordlistName.contains(query, ignoreCase = true) ||
-                item.capturedData.contains(query, ignoreCase = true)
-            matchesType && matchesQuery
-        }
-    }
+    val filtered = state.filteredHits
 
     Column(
         modifier = modifier

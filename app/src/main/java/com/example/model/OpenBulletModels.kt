@@ -390,6 +390,8 @@ data class RunnerUiState(
     val wordlists: List<WordlistItem> = emptyList(),
     val workerRows: List<WorkerRow> = emptyList(),
     val resultRows: List<ResultRow> = emptyList(),
+    val filteredResultRows: List<ResultRow> = emptyList(),
+    val resultCounts: Map<ResultTab, Int> = emptyMap(),
     val consoleLogs: List<String> = listOf("Runner initialized successfully!"),
     val stats: RunnerStats = RunnerStats(),
     val nativeEngineBanner: String = ""
@@ -397,8 +399,13 @@ data class RunnerUiState(
 
 data class ProxiesUiState(
     val proxies: List<ProxyItem> = emptyList(),
+    val filteredProxies: List<ProxyItem> = emptyList(),
     val protocolFilter: ProxyProtocol? = null,
     val statusFilter: ProxyStatus? = null,
+    val aliveCount: Int = 0,
+    val bannedCount: Int = 0,
+    val badCount: Int = 0,
+    val avgPingMs: Int? = null,
     val isCheckingProxies: Boolean = false,
     val checkedCount: Int = 0,
     val checkingTotal: Int = 0,
@@ -413,6 +420,8 @@ data class WordlistsUiState(
 
 data class ConfigsUiState(
     val configs: List<ConfigItem> = emptyList(),
+    val filteredConfigs: List<ConfigItem> = emptyList(),
+    val availableCategories: List<String> = emptyList(),
     val searchQuery: String = "",
     val categoryFilter: String? = null,
     val selectedPreviewId: String? = null,
@@ -424,6 +433,7 @@ data class ConfigsUiState(
 
 data class HitsDbUiState(
     val hits: List<HitDbItem> = emptyList(),
+    val filteredHits: List<HitDbItem> = emptyList(),
     val searchQuery: String = "",
     val typeFilter: ResultTab? = null
 )

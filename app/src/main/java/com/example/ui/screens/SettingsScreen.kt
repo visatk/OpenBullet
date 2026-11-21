@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -272,12 +274,12 @@ fun SettingsScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .clickable { onSelectAccentColor(hex) }
+                                        .clickable(role = Role.RadioButton) { onSelectAccentColor(hex) }
                                         .padding(6.dp)
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .size(44.dp)
+                                            .size(48.dp)
                                             .background(swatchColor, RoundedCornerShape(10.dp))
                                             .border(
                                                 width = if (selected) 2.5.dp else 1.dp,
@@ -324,8 +326,9 @@ private fun ObSwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(8.dp))
-            .clickable { onChange(!checked) }
+            .clickable(role = Role.Switch) { onChange(!checked) }
             .padding(vertical = 6.dp, horizontal = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -338,7 +341,7 @@ private fun ObSwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> 
         )
         Switch(
             checked = checked,
-            onCheckedChange = onChange,
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
                 checkedTrackColor = MaterialTheme.colorScheme.primary,

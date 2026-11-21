@@ -107,15 +107,15 @@ object LoliScriptParser {
     private val redirectRegex = Regex("""REDIRECT\s+(true|false)""", RegexOption.IGNORE_CASE)
     private val keyRegex = Regex("""KEY\s+"((?:\\.|[^"\\])+)"""", RegexOption.IGNORE_CASE)
     private val parseLrRegex = Regex(
-        """PARSE\s+"([^"]*)"\s+LR\s+"((?:\\.|[^"\\])*)"\s+"((?:\\.|[^"\\])*)"\s*->\s*(CAP|VAR)\s+"([^"]+)"""",
+        """PARSE\s+"((?:\\.|[^"\\])*)"\s+LR\s+"((?:\\.|[^"\\])*)"\s+"((?:\\.|[^"\\])*)"\s*->\s*(CAP|VAR)\s+"((?:\\.|[^"\\])+)"""",
         RegexOption.IGNORE_CASE
     )
     private val parseSingleRegex = Regex(
-        """PARSE\s+"([^"]*)"\s+(REGEX|JSON)\s+"((?:\\.|[^"\\])*)"\s*->\s*(CAP|VAR)\s+"([^"]+)"""",
+        """PARSE\s+"((?:\\.|[^"\\])*)"\s+(REGEX|JSON)\s+"((?:\\.|[^"\\])*)"\s*->\s*(CAP|VAR)\s+"((?:\\.|[^"\\])+)"""",
         RegexOption.IGNORE_CASE
     )
     private val functionRegex = Regex(
-        """FUNCTION\s+([A-Z0-9_]+)\s+"((?:\\.|[^"\\])*)"\s*->\s*VAR\s+"([^"]+)"""",
+        """FUNCTION\s+([A-Z0-9_]+)\s+"((?:\\.|[^"\\])*)"\s*->\s*VAR\s+"((?:\\.|[^"\\])+)"""",
         RegexOption.IGNORE_CASE
     )
 
@@ -302,12 +302,12 @@ object LoliScriptParser {
                 result.add(
                     ConfigBlock.ParseBlock(
                         id = UUID.randomUUID().toString(),
-                        sourceVar = match.groupValues[1].ifBlank { "<SOURCE>" },
+                        sourceVar = unescape(match.groupValues[1]).ifBlank { "<SOURCE>" },
                         mode = ParseMode.LR,
                         leftOrPattern = unescape(match.groupValues[2]),
                         right = unescape(match.groupValues[3]),
                         isCapture = match.groupValues[4].equals("CAP", ignoreCase = true),
-                        outputName = match.groupValues[5]
+                        outputName = unescape(match.groupValues[5])
                     )
                 )
                 continue
@@ -320,12 +320,12 @@ object LoliScriptParser {
                 result.add(
                     ConfigBlock.ParseBlock(
                         id = UUID.randomUUID().toString(),
-                        sourceVar = match.groupValues[1].ifBlank { "<SOURCE>" },
+                        sourceVar = unescape(match.groupValues[1]).ifBlank { "<SOURCE>" },
                         mode = mode,
                         leftOrPattern = unescape(match.groupValues[3]),
                         right = "",
                         isCapture = match.groupValues[4].equals("CAP", ignoreCase = true),
-                        outputName = match.groupValues[5]
+                        outputName = unescape(match.groupValues[5])
                     )
                 )
                 continue
@@ -343,7 +343,7 @@ object LoliScriptParser {
                         id = UUID.randomUUID().toString(),
                         functionType = fnType,
                         inputTemplate = unescape(match.groupValues[2]),
-                        outputVar = match.groupValues[3]
+                        outputVar = unescape(match.groupValues[3])
                     )
                 )
             }
@@ -382,7 +382,7 @@ object LoliScriptParser {
 
                     is ConfigBlock.FunctionBlock -> {
                         append(
-                            "FUNCTION ${block.functionType.loliKeyword} \"${escape(block.inputTemplate)}\" -> VAR \"${block.outputVar.trim()}\""
+                            "FUNCTION ${block.functionType.loliKeyword} \"${escape(block.inputTemplate)}\" -> VAR \"${escape(block.outputVar.trim())}\""
                         )
                     }
 
@@ -390,13 +390,13 @@ object LoliScriptParser {
                         val destKind = if (block.isCapture) "CAP" else "VAR"
                         when (block.mode) {
                             ParseMode.LR -> append(
-                                "PARSE \"${block.sourceVar}\" LR \"${escape(block.leftOrPattern)}\" \"${escape(block.right)}\" -> $destKind \"${block.outputName.trim()}\""
+                                "PARSE \"${escape(block.sourceVar)}\" LR \"${escape(block.leftOrPattern)}\" \"${escape(block.right)}\" -> $destKind \"${escape(block.outputName.trim())}\""
                             )
                             ParseMode.REGEX -> append(
-                                "PARSE \"${block.sourceVar}\" REGEX \"${escape(block.leftOrPattern)}\" -> $destKind \"${block.outputName.trim()}\""
+                                "PARSE \"${escape(block.sourceVar)}\" REGEX \"${escape(block.leftOrPattern)}\" -> $destKind \"${escape(block.outputName.trim())}\""
                             )
                             ParseMode.JSON -> append(
-                                "PARSE \"${block.sourceVar}\" JSON \"${escape(block.leftOrPattern)}\" -> $destKind \"${block.outputName.trim()}\""
+                                "PARSE \"${escape(block.sourceVar)}\" JSON \"${escape(block.leftOrPattern)}\" -> $destKind \"${escape(block.outputName.trim())}\""
                             )
                         }
                     }
@@ -439,6 +439,8 @@ object LoliScriptParser {
 }
 
 object HttpExecutionEngine {
+
+    private const val MAX_RESPONSE_BODY_BYTES = 256L * 1024L // 256 KB cap per response for high-concurrency stability
 
     private val lenientJsonAdapter: JsonAdapter<Any> by lazy {
         Moshi.Builder().build().adapter(Any::class.java).lenient()
@@ -658,7 +660,15 @@ object HttpExecutionEngine {
 
                         client.newCall(reqBuilder.build()).execute().use { resp ->
                             val elapsed = System.currentTimeMillis() - startMs
-                            val bodyStr = resp.body?.string().orEmpty()
+                            val bodyStr = resp.body?.let { body ->
+                                val source = body.source()
+                                source.request(MAX_RESPONSE_BODY_BYTES)
+                                val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                                source.buffer.clone().readString(
+                                    minOf(source.buffer.size, MAX_RESPONSE_BODY_BYTES),
+                                    charset
+                                )
+                            }.orEmpty()
                             Triple(resp.code, elapsed, bodyStr)
                         }
                     }

@@ -24,30 +24,40 @@ class AppViewModelFactory : ViewModelProvider.Factory {
             modelClass.isAssignableFrom(RunnerViewModel::class.java) -> {
                 RunnerViewModel(
                     repository = container.repository,
-                    soundNotifier = container.soundNotifier
+                    soundNotifier = container.soundNotifier,
+                    manageRunnerJobUseCase = container.manageRunnerJobUseCase,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             modelClass.isAssignableFrom(ProxiesViewModel::class.java) -> {
                 ProxiesViewModel(
                     repository = container.repository,
                     parseProxiesUseCase = container.parseProxiesUseCase,
-                    exportFormatterUseCase = container.exportFormatterUseCase
+                    exportFormatterUseCase = container.exportFormatterUseCase,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             modelClass.isAssignableFrom(WordlistsViewModel::class.java) -> {
-                WordlistsViewModel(repository = container.repository) as T
+                WordlistsViewModel(
+                    repository = container.repository,
+                    createWordlistUseCase = container.createWordlistUseCase
+                ) as T
             }
             modelClass.isAssignableFrom(ConfigsViewModel::class.java) -> {
                 ConfigsViewModel(
                     repository = container.repository,
                     exportFormatterUseCase = container.exportFormatterUseCase,
-                    dispatchers = container.dispatchers
+                    dispatchers = container.dispatchers,
+                    importConfigsUseCase = container.importConfigsUseCase,
+                    debugConfigScriptUseCase = container.debugConfigScriptUseCase,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             modelClass.isAssignableFrom(HitsDbViewModel::class.java) -> {
                 HitsDbViewModel(
                     repository = container.repository,
-                    exportFormatterUseCase = container.exportFormatterUseCase
+                    exportFormatterUseCase = container.exportFormatterUseCase,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             modelClass.isAssignableFrom(ToolsViewModel::class.java) -> {
@@ -56,13 +66,17 @@ class AppViewModelFactory : ViewModelProvider.Factory {
                     cleanWordlistUseCase = container.cleanWordlistUseCase,
                     formatCombosUseCase = container.formatCombosUseCase,
                     cryptoAndRegexUseCase = container.cryptoAndRegexUseCase,
-                    dispatchers = container.dispatchers
+                    dispatchers = container.dispatchers,
+                    runNativeDiagnosticUseCase = container.runNativeDiagnosticUseCase,
+                    createWordlistUseCase = container.createWordlistUseCase,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             modelClass.isAssignableFrom(SettingsViewModel::class.java) -> {
                 SettingsViewModel(
                     repository = container.repository,
-                    soundNotifier = container.soundNotifier
+                    soundNotifier = container.soundNotifier,
+                    savedStateHandle = savedStateHandle
                 ) as T
             }
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

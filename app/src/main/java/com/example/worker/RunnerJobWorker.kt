@@ -5,15 +5,18 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import com.example.data.local.HitDbEntity
 import com.example.data.local.OpenBulletDatabase
 import com.example.data.local.ProxyCheckUpdate
-import com.example.data.local.RunnerSessionEntity
 import com.example.data.local.WordlistFileStore
+import com.example.data.source.LocalWorkspaceDataSource
+import com.example.data.source.RoomWorkspaceDataSource
+import com.example.di.DefaultDispatcherProvider
+import com.example.model.HitDbItem
 import com.example.model.ProxyItem
 import com.example.model.ProxyMode
 import com.example.model.ProxyStatus
 import com.example.model.ResultTab
+import com.example.model.RunnerSessionSnapshot
 import com.example.network.HttpCheckResult
 import com.example.network.HttpExecutionEngine
 import com.example.network.LoliScriptParser
@@ -34,11 +37,21 @@ import kotlinx.coroutines.withContext
 
 class RunnerJobWorker(
     appContext: Context,
-    params: WorkerParameters
+    params: WorkerParameters,
+    private val localDataSource: LocalWorkspaceDataSource
 ) : CoroutineWorker(appContext, params) {
 
+    constructor(appContext: Context, params: WorkerParameters) : this(
+        appContext = appContext,
+        params = params,
+        localDataSource = RoomWorkspaceDataSource(
+            db = OpenBulletDatabase.getInstance(appContext),
+            wordlistFileStore = WordlistFileStore(appContext),
+            dispatchers = DefaultDispatcherProvider()
+        )
+    )
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val db = OpenBulletDatabase.getInstance(applicationContext)
         val configId = inputData.getString(KEY_CONFIG_ID)
             ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Missing config ID."))
         val wordlistId = inputData.getString(KEY_WORDLIST_ID)
@@ -55,20 +68,20 @@ class RunnerJobWorker(
         val initialToCheck = inputData.getInt(KEY_INITIAL_TO_CHECK, 0)
         val initialElapsedSec = inputData.getLong(KEY_INITIAL_ELAPSED_SEC, 0L)
 
-        val config = db.configDao().getById(configId)?.toModel()
+        val config = localDataSource.getConfigById(configId)
             ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Selected config no longer exists."))
-        val wordlistEntity = db.wordlistDao().getById(wordlistId)
+        val wordlist = localDataSource.getWordlistById(wordlistId)
             ?: return@withContext Result.failure(workDataOf(KEY_LOG_LINE to "Selected wordlist no longer exists."))
-        val wordlistName = wordlistEntity.name
+        val wordlistName = wordlist.name
 
-        val settings = db.settingsDao().getSnapshot()
+        val settings = localDataSource.getSettingsSnapshot()
         val timeoutSec = settings?.requestTimeoutSec ?: 10
         val maxRetries = (settings?.maxRetries ?: 3).coerceIn(0, 15)
         val autoSaveHits = settings?.autoSaveHits ?: true
         val ignoreEmptyLines = settings?.ignoreEmptyLines ?: true
         val keepAwake = settings?.keepAwakeEnabled ?: true
 
-        val lines = WordlistFileStore(applicationContext).readLines(wordlistEntity.id, wordlistEntity.linesRaw)
+        val lines = localDataSource.readWordlistLines(wordlist.id)
         if (lines.isEmpty()) {
             return@withContext Result.success(
                 workDataOf(KEY_LOG_LINE to "Wordlist '$wordlistName' has 0 lines.")
@@ -97,7 +110,7 @@ class RunnerJobWorker(
         }
 
         BackgroundKeepAliveHelper.withKeepAwakeLocks(applicationContext, enabled = keepAwake) {
-            val allProxies = db.proxyDao().getAllSnapshot().map { it.toModel() }
+            val allProxies = localDataSource.getAllProxiesSnapshot()
             val usableProxies = selectUsableProxies(allProxies)
             val useProxies = (proxyMode == ProxyMode.ON || (proxyMode == ProxyMode.DEF && config.needsProxies)) &&
                 usableProxies.isNotEmpty()
@@ -120,7 +133,7 @@ class RunnerJobWorker(
             val activeBotSlots = ConcurrentHashMap<Int, String>()
             val pendingResultRows = ConcurrentLinkedQueue<String>()
             val recentPersistedResults = ConcurrentLinkedQueue<String>()
-            val pendingHitEntities = ConcurrentLinkedQueue<HitDbEntity>()
+            val pendingHitItems = ConcurrentLinkedQueue<HitDbItem>()
             val completionTimestamps = ConcurrentLinkedQueue<Long>()
 
             val runStartMs = System.currentTimeMillis()
@@ -144,8 +157,8 @@ class RunnerJobWorker(
                     logLine = startLog
                 )
             )
-            db.runnerSessionDao().upsert(
-                RunnerSessionEntity(
+            localDataSource.upsertRunnerSession(
+                RunnerSessionSnapshot(
                     configId = configId,
                     wordlistId = wordlistId,
                     isRunning = true,
@@ -183,13 +196,13 @@ class RunnerJobWorker(
                 markRunning: Boolean,
                 statusLog: String
             ): TelemetrySnapshot {
-                val toInsertHits = mutableListOf<HitDbEntity>()
+                val toInsertHits = mutableListOf<HitDbItem>()
                 while (true) {
-                    val entity = pendingHitEntities.poll() ?: break
-                    toInsertHits.add(entity)
+                    val item = pendingHitItems.poll() ?: break
+                    toInsertHits.add(item)
                 }
                 if (toInsertHits.isNotEmpty()) {
-                    db.hitDbDao().insertAll(toInsertHits)
+                    localDataSource.insertHitsBatch(toInsertHits)
                 }
 
                 if (pendingProxyUpdates.isNotEmpty()) {
@@ -199,7 +212,7 @@ class RunnerJobWorker(
                         pendingProxyUpdates.remove(key)?.let { updates.add(it) }
                     }
                     if (updates.isNotEmpty()) {
-                        db.proxyDao().updateCheckResultsBatch(updates)
+                        localDataSource.updateProxyCheckResultsBatch(updates)
                     }
                 }
 
@@ -252,8 +265,8 @@ class RunnerJobWorker(
                     maxBytes = MAX_RESULTS_BYTES
                 )
 
-                db.runnerSessionDao().upsert(
-                    RunnerSessionEntity(
+                localDataSource.upsertRunnerSession(
+                    RunnerSessionSnapshot(
                         configId = configId,
                         wordlistId = wordlistId,
                         isRunning = markRunning,
@@ -424,12 +437,12 @@ class RunnerJobWorker(
                                                 packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.HITS.name)
                                             )
                                             if (autoSaveHits) {
-                                                pendingHitEntities.add(
-                                                    HitDbEntity(
+                                                pendingHitItems.add(
+                                                    HitDbItem(
                                                         id = UUID.randomUUID().toString(),
                                                         date = nowClock,
                                                         data = rawLine,
-                                                        type = ResultTab.HITS.name,
+                                                        type = ResultTab.HITS,
                                                         configName = config.name,
                                                         wordlistName = wordlistName,
                                                         capturedData = finalResult.capturedData
@@ -443,12 +456,12 @@ class RunnerJobWorker(
                                                 packResultRow(nowClock, rawLine, proxyLabel, finalResult.capturedData, ResultTab.CUSTOM.name)
                                             )
                                             if (autoSaveHits) {
-                                                pendingHitEntities.add(
-                                                    HitDbEntity(
+                                                pendingHitItems.add(
+                                                    HitDbItem(
                                                         id = UUID.randomUUID().toString(),
                                                         date = nowClock,
                                                         data = rawLine,
-                                                        type = ResultTab.CUSTOM.name,
+                                                        type = ResultTab.CUSTOM,
                                                         configName = config.name,
                                                         wordlistName = wordlistName,
                                                         capturedData = finalResult.capturedData
@@ -496,8 +509,8 @@ class RunnerJobWorker(
                         statusLog = finalLog
                     )
                     // Ensure final session row reflects exact finalCpm & elapsed
-                    db.runnerSessionDao().upsert(
-                        RunnerSessionEntity(
+                    localDataSource.upsertRunnerSession(
+                        RunnerSessionSnapshot(
                             configId = configId,
                             wordlistId = wordlistId,
                             isRunning = false,

@@ -78,20 +78,8 @@ fun ConfigsScreen(
     onCopyScriptFeedback: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val categories = remember(state.configs) {
-        state.configs.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
-    }
-    val filteredConfigs = remember(state.configs, state.searchQuery, state.categoryFilter) {
-        val q = state.searchQuery.trim()
-        state.configs.filter { cfg ->
-            val matchCat = state.categoryFilter == null || cfg.category.equals(state.categoryFilter, ignoreCase = true)
-            val matchQuery = q.isEmpty() ||
-                cfg.name.contains(q, ignoreCase = true) ||
-                cfg.author.contains(q, ignoreCase = true) ||
-                cfg.category.contains(q, ignoreCase = true)
-            matchCat && matchQuery
-        }
-    }
+    val categories = state.availableCategories
+    val filteredConfigs = state.filteredConfigs
     val previewConfig = filteredConfigs.firstOrNull { it.id == state.selectedPreviewId }
         ?: filteredConfigs.firstOrNull()
         ?: state.configs.firstOrNull { it.id == state.selectedPreviewId }

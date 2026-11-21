@@ -244,7 +244,6 @@ fun OpenBulletApp(
                         ObBottomNavigationBar(
                             shellState = shellState,
                             onSelectTab = { tab ->
-                                if (openEditor != null) configsVm.closeEditor()
                                 shellVm.selectTab(tab)
                             }
                         )

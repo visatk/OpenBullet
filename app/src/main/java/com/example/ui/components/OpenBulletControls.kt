@@ -214,18 +214,14 @@ fun ObWindowHeader(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                    ) {
-                        Text(
-                            text = BuildConfig.VERSION_NAME,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
+                    Text(
+                        text = "v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontFeatureSettings = "tnum"
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     if (isRunning) {
                         RunningPulseBadge()
                     }
@@ -359,10 +355,10 @@ fun RunningPulseBadge(modifier: Modifier = Modifier) {
     val hitColor = ObTheme.colors.hit
     val hitContainer = ObTheme.colors.hitContainer
     Surface(
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(6.dp),
         color = hitContainer,
         border = BorderStroke(1.dp, hitColor.copy(alpha = 0.55f)),
-        modifier = modifier
+        modifier = modifier.semantics { contentDescription = "Runner status: Active" }
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
@@ -377,7 +373,10 @@ fun RunningPulseBadge(modifier: Modifier = Modifier) {
             )
             Text(
                 text = "ACTIVE",
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = JetBrainsMonoFontFamily
+                ),
                 color = hitColor
             )
         }
@@ -759,7 +758,7 @@ fun ObStatusPill(
     showDot: Boolean = false
 ) {
     Surface(
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(6.dp),
         color = containerColor,
         border = BorderStroke(1.dp, tintColor.copy(alpha = 0.45f)),
         modifier = modifier
@@ -778,7 +777,11 @@ fun ObStatusPill(
             }
             Text(
                 text = text,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontFeatureSettings = "tnum"
+                ),
                 color = tintColor,
                 maxLines = 1
             )
@@ -1074,7 +1077,7 @@ fun ObProgressBar(
         drawStopIndicator = {},
         modifier = modifier
             .height(10.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .clip(RoundedCornerShape(4.dp))
             .semantics { contentDescription = "Runner progress $pct percent" }
     )
 }
@@ -1102,11 +1105,11 @@ fun ObMonoValueBox(
 ) {
     val shape = RoundedCornerShape(8.dp)
     val baseModifier = modifier
-        .heightIn(min = 38.dp)
+        .heightIn(min = 40.dp)
         .clip(shape)
         .background(MaterialTheme.colorScheme.surfaceContainerLowest)
         .border(1.dp, MaterialTheme.colorScheme.outline, shape)
-        .let { m -> if (onClick != null) m.clickable(onClick = onClick) else m }
+        .let { m -> if (onClick != null) m.clickable(role = Role.Button, onClick = onClick) else m }
         .padding(horizontal = 10.dp, vertical = 6.dp)
 
     Box(

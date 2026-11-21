@@ -1,10 +1,13 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
 import com.example.di.DispatcherProvider
+import com.example.domain.usecase.DebugConfigScriptUseCase
 import com.example.domain.usecase.ExportFormatterUseCase
+import com.example.domain.usecase.ImportConfigsUseCase
 import com.example.model.ConfigBlock
 import com.example.model.ConfigEditorSubTab
 import com.example.model.ConfigItem
@@ -12,9 +15,7 @@ import com.example.model.ConfigsUiState
 import com.example.model.ProxyItem
 import com.example.model.ProxyStatus
 import com.example.network.ConfigExportFormat
-import com.example.network.ConfigFileCodec
 import com.example.network.ConfigTemplates
-import com.example.network.HttpExecutionEngine
 import com.example.util.DateTimeFormats
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -23,17 +24,25 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class ConfigsViewModel(
     private val repository: OpenBulletRepository,
     private val exportFormatterUseCase: ExportFormatterUseCase,
-    private val dispatchers: DispatcherProvider
+    private val dispatchers: DispatcherProvider,
+    private val importConfigsUseCase: ImportConfigsUseCase = ImportConfigsUseCase(repository),
+    private val debugConfigScriptUseCase: DebugConfigScriptUseCase = DebugConfigScriptUseCase(dispatchers),
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ConfigsUiState())
+    private val _uiState = MutableStateFlow(
+        ConfigsUiState(
+            searchQuery = savedStateHandle.get<String>(KEY_SEARCH_QUERY).orEmpty(),
+            categoryFilter = savedStateHandle.get<String>(KEY_CATEGORY_FILTER)
+        )
+    )
     val uiState: StateFlow<ConfigsUiState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
@@ -44,47 +53,77 @@ class ConfigsViewModel(
 
     init {
         viewModelScope.launch {
-            repository.configsFlow.collect { configs ->
+            combine(
+                repository.configsFlow,
+                repository.proxiesFlow,
+                repository.settingsFlow
+            ) { configs, proxies, settings ->
+                Triple(configs, proxies, settings)
+            }.collect { (configs, proxies, settings) ->
+                currentProxies = proxies
+                val usable = proxies.count {
+                    it.status == ProxyStatus.AVAILABLE || it.status == ProxyStatus.UNTESTED
+                }
+                if (settings != null) {
+                    requestTimeoutSec = settings.requestTimeoutSec
+                }
                 _uiState.update { current ->
                     val updatedPreviewId = current.selectedPreviewId?.takeIf { id ->
                         configs.any { it.id == id }
                     } ?: configs.firstOrNull()?.id
                     current.copy(
                         configs = configs,
-                        selectedPreviewId = updatedPreviewId
-                    )
-                }
-            }
-        }
-        viewModelScope.launch {
-            repository.proxiesFlow.collect { proxies ->
-                currentProxies = proxies
-                val usable = proxies.count {
-                    it.status == ProxyStatus.AVAILABLE || it.status == ProxyStatus.UNTESTED
-                }
-                _uiState.update { it.copy(usableProxyCount = usable) }
-            }
-        }
-        viewModelScope.launch {
-            repository.settingsFlow.collect { settings ->
-                if (settings != null) {
-                    requestTimeoutSec = settings.requestTimeoutSec
-                    _uiState.update { it.copy(activeRunnerConfigId = settings.selectedConfigId) }
+                        selectedPreviewId = updatedPreviewId,
+                        usableProxyCount = usable,
+                        activeRunnerConfigId = if (settings != null) {
+                            settings.selectedConfigId
+                        } else {
+                            current.activeRunnerConfigId
+                        }
+                    ).withDerivedConfigs(configs = configs)
                 }
             }
         }
     }
 
     fun updateSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+        savedStateHandle[KEY_SEARCH_QUERY] = query
+        _uiState.update { it.withDerivedConfigs(searchQuery = query) }
     }
 
     fun setCategoryFilter(category: String?) {
-        _uiState.update { it.copy(categoryFilter = category) }
+        savedStateHandle[KEY_CATEGORY_FILTER] = category
+        _uiState.update { it.withDerivedConfigs(categoryFilter = category, updateCategoryFilter = true) }
     }
 
     fun selectPreview(id: String) {
         _uiState.update { it.copy(selectedPreviewId = id) }
+    }
+
+    private fun ConfigsUiState.withDerivedConfigs(
+        configs: List<ConfigItem> = this.configs,
+        searchQuery: String = this.searchQuery,
+        categoryFilter: String? = this.categoryFilter,
+        updateCategoryFilter: Boolean = false
+    ): ConfigsUiState {
+        val resolvedCategory = if (updateCategoryFilter) categoryFilter else this.categoryFilter
+        val categories = configs.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+        val q = searchQuery.trim()
+        val filtered = configs.filter { cfg ->
+            val matchCat = resolvedCategory == null || cfg.category.equals(resolvedCategory, ignoreCase = true)
+            val matchQuery = q.isEmpty() ||
+                cfg.name.contains(q, ignoreCase = true) ||
+                cfg.author.contains(q, ignoreCase = true) ||
+                cfg.category.contains(q, ignoreCase = true)
+            matchCat && matchQuery
+        }
+        return copy(
+            configs = configs,
+            filteredConfigs = filtered,
+            availableCategories = categories,
+            searchQuery = searchQuery,
+            categoryFilter = resolvedCategory
+        )
     }
 
     fun useInRunner(config: ConfigItem) {
@@ -142,24 +181,25 @@ class ConfigsViewModel(
         fallbackName: String = "Imported Config",
         openInEditorAfterImport: Boolean = false
     ) {
-        val parsedList = ConfigFileCodec.parseImportPayload(rawText, fallbackName)
-        if (parsedList.isEmpty()) {
-            _events.tryEmit(UiEvent.ShowSnackbar("Nothing to import: empty or invalid payload"))
-            return
+        viewModelScope.launch {
+            val parsedList = importConfigsUseCase(rawPayload = rawText, fallbackName = fallbackName)
+            if (parsedList.isEmpty()) {
+                _events.tryEmit(UiEvent.ShowSnackbar("Nothing to import: empty or invalid payload"))
+                return@launch
+            }
+            val firstCfg = parsedList.first()
+            _uiState.update { current ->
+                current.copy(
+                    selectedPreviewId = firstCfg.id,
+                    editor = if (openInEditorAfterImport) {
+                        ConfigEditorHelper.createInitialState(firstCfg)
+                    } else {
+                        current.editor
+                    }
+                )
+            }
+            _events.tryEmit(UiEvent.ShowSnackbar("Imported ${parsedList.size} config(s) (${firstCfg.name})"))
         }
-        viewModelScope.launch { repository.saveConfigs(parsedList) }
-        val firstCfg = parsedList.first()
-        _uiState.update { current ->
-            current.copy(
-                selectedPreviewId = firstCfg.id,
-                editor = if (openInEditorAfterImport) {
-                    ConfigEditorHelper.createInitialState(firstCfg)
-                } else {
-                    current.editor
-                }
-            )
-        }
-        _events.tryEmit(UiEvent.ShowSnackbar("Imported ${parsedList.size} config(s) (${firstCfg.name})"))
     }
 
     fun importConfigFromUrl(url: String) {
@@ -325,21 +365,19 @@ class ConfigsViewModel(
         val ed = _uiState.value.editor ?: return
         val synced = ConfigEditorHelper.switchSubTab(ed, ConfigEditorSubTab.DEBUGGER)
         val scriptText = ConfigEditorHelper.syncScriptForSave(ed)
-        val chosenProxy = if (ed.debugUseProxy) RunnerPacketHelper.chooseDebugProxy(currentProxies) else null
 
         _uiState.update {
             it.copy(editor = synced.copy(isDebugging = true, debugResult = null))
         }
 
         viewModelScope.launch {
-            val result = withContext(dispatchers.io) {
-                HttpExecutionEngine.executeDebug(
-                    rawLine = ed.testDataInput.ifBlank { "test@example.com:password123" },
-                    scriptText = scriptText,
-                    timeoutSec = requestTimeoutSec,
-                    proxyItem = chosenProxy
-                )
-            }
+            val result = debugConfigScriptUseCase(
+                rawTestInput = ed.testDataInput,
+                scriptText = scriptText,
+                timeoutSec = requestTimeoutSec,
+                useProxy = ed.debugUseProxy,
+                availableProxies = currentProxies
+            )
             _uiState.update { cur ->
                 val curEd = cur.editor ?: return@update cur
                 cur.copy(editor = curEd.copy(isDebugging = false, debugResult = result))
@@ -399,5 +437,10 @@ class ConfigsViewModel(
             )
         )
         return loadInRunner
+    }
+
+    companion object {
+        private const val KEY_SEARCH_QUERY = "configs_search_query"
+        private const val KEY_CATEGORY_FILTER = "configs_category_filter"
     }
 }

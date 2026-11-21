@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
@@ -18,10 +19,19 @@ import kotlinx.coroutines.launch
 
 class HitsDbViewModel(
     private val repository: OpenBulletRepository,
-    private val exportFormatterUseCase: ExportFormatterUseCase
+    private val exportFormatterUseCase: ExportFormatterUseCase,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(HitsDbUiState())
+    private val initialTypeFilter = savedStateHandle.get<String>(KEY_TYPE_FILTER)
+        ?.let { name -> runCatching { ResultTab.valueOf(name) }.getOrNull() }
+
+    private val _uiState = MutableStateFlow(
+        HitsDbUiState(
+            searchQuery = savedStateHandle.get<String>(KEY_SEARCH_QUERY).orEmpty(),
+            typeFilter = initialTypeFilter
+        )
+    )
     val uiState: StateFlow<HitsDbUiState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
@@ -30,17 +40,25 @@ class HitsDbViewModel(
     init {
         viewModelScope.launch {
             repository.hitsDbFlow.collect { hits ->
-                _uiState.update { it.copy(hits = hits) }
+                _uiState.update { current ->
+                    current.withDerivedHits(hits = hits)
+                }
             }
         }
     }
 
     fun updateSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+        savedStateHandle[KEY_SEARCH_QUERY] = query
+        _uiState.update { current ->
+            current.withDerivedHits(searchQuery = query)
+        }
     }
 
     fun setTypeFilter(type: ResultTab?) {
-        _uiState.update { it.copy(typeFilter = type) }
+        savedStateHandle[KEY_TYPE_FILTER] = type?.name
+        _uiState.update { current ->
+            current.withDerivedHits(typeFilter = type, updateTypeFilter = true)
+        }
     }
 
     fun deleteHit(id: String) {
@@ -81,5 +99,29 @@ class HitsDbViewModel(
                 )
             )
         }
+    }
+
+    private fun HitsDbUiState.withDerivedHits(
+        hits: List<HitDbItem> = this.hits,
+        searchQuery: String = this.searchQuery,
+        typeFilter: ResultTab? = this.typeFilter,
+        updateTypeFilter: Boolean = false
+    ): HitsDbUiState {
+        val resolvedFilter = if (updateTypeFilter) typeFilter else this.typeFilter
+        return copy(
+            hits = hits,
+            searchQuery = searchQuery,
+            typeFilter = resolvedFilter,
+            filteredHits = exportFormatterUseCase.filterHits(
+                hits = hits,
+                typeFilter = resolvedFilter,
+                searchQuery = searchQuery
+            )
+        )
+    }
+
+    companion object {
+        private const val KEY_SEARCH_QUERY = "hits_search_query"
+        private const val KEY_TYPE_FILTER = "hits_type_filter"
     }
 }

@@ -16,21 +16,30 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class AppShellViewModel(
     private val repository: OpenBulletRepository,
-    private val savedStateHandle: SavedStateHandle
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
     private val initialTab = savedStateHandle.get<String>(KEY_ACTIVE_TAB)
         ?.let { name -> runCatching { MainTab.valueOf(name) }.getOrNull() }
         ?: MainTab.RUNNER
 
+    private val initialHistory = savedStateHandle.get<String>(KEY_TAB_HISTORY)
+        ?.split(',')
+        ?.mapNotNull { name ->
+            name.takeIf { it.isNotBlank() }?.let { runCatching { MainTab.valueOf(it) }.getOrNull() }
+        }
+        .orEmpty()
+
     private val _uiState = MutableStateFlow(
         AppShellUiState(
             activeTab = initialTab,
+            tabHistory = initialHistory,
             nativeEngineBanner = NativeScannerBridge.engineBanner()
         )
     )
@@ -43,50 +52,45 @@ class AppShellViewModel(
     val events: SharedFlow<UiEvent> = _events.asSharedFlow()
 
     init {
-        viewModelScope.launch {
-            repository.settingsFlow.collect { saved ->
-                if (saved != null) {
-                    _uiState.update {
-                        it.copy(
-                            themeMode = saved.themeMode,
-                            useDynamicColor = saved.useDynamicColor,
-                            accentHex = saved.accentHex,
-                            showTimestampsInConsole = saved.showTimestampsInConsole
-                        )
-                    }
-                }
-            }
+        val countsFlow = combine(
+            repository.hitsDbFlow,
+            repository.proxiesFlow,
+            repository.configsFlow,
+            repository.wordlistsFlow
+        ) { hits, proxies, configs, wordlists ->
+            WorkspaceCounts(
+                hitsCount = hits.size,
+                totalProxiesCount = proxies.size,
+                aliveProxiesCount = proxies.count { it.status == ProxyStatus.AVAILABLE },
+                configsCount = configs.size,
+                wordlistsCount = wordlists.size
+            )
         }
+
         viewModelScope.launch {
-            repository.observeRunnerWork().collect { work ->
-                val active = work?.state == WorkExecutionState.ENQUEUED ||
+            combine(
+                repository.settingsFlow,
+                repository.observeRunnerWork(),
+                countsFlow
+            ) { saved, work, counts ->
+                Triple(saved, work, counts)
+            }.collect { (saved, work, counts) ->
+                val isRunnerActive = work?.state == WorkExecutionState.ENQUEUED ||
                     work?.state == WorkExecutionState.RUNNING
-                _uiState.update { it.copy(isRunnerActive = active) }
-            }
-        }
-        viewModelScope.launch {
-            repository.hitsDbFlow.collect { hits ->
-                _uiState.update { it.copy(hitsCount = hits.size) }
-            }
-        }
-        viewModelScope.launch {
-            repository.proxiesFlow.collect { proxies ->
-                _uiState.update {
-                    it.copy(
-                        totalProxiesCount = proxies.size,
-                        aliveProxiesCount = proxies.count { p -> p.status == ProxyStatus.AVAILABLE }
+                _uiState.update { current ->
+                    current.copy(
+                        themeMode = saved?.themeMode ?: current.themeMode,
+                        useDynamicColor = saved?.useDynamicColor ?: current.useDynamicColor,
+                        accentHex = saved?.accentHex ?: current.accentHex,
+                        showTimestampsInConsole = saved?.showTimestampsInConsole ?: current.showTimestampsInConsole,
+                        isRunnerActive = isRunnerActive,
+                        hitsCount = counts.hitsCount,
+                        totalProxiesCount = counts.totalProxiesCount,
+                        aliveProxiesCount = counts.aliveProxiesCount,
+                        configsCount = counts.configsCount,
+                        wordlistsCount = counts.wordlistsCount
                     )
                 }
-            }
-        }
-        viewModelScope.launch {
-            repository.configsFlow.collect { configs ->
-                _uiState.update { it.copy(configsCount = configs.size) }
-            }
-        }
-        viewModelScope.launch {
-            repository.wordlistsFlow.collect { lists ->
-                _uiState.update { it.copy(wordlistsCount = lists.size) }
             }
         }
     }
@@ -94,10 +98,11 @@ class AppShellViewModel(
     fun selectTab(tab: MainTab) {
         _uiState.update { current ->
             if (current.activeTab == tab) return@update current
-            savedStateHandle[KEY_ACTIVE_TAB] = tab.name
+            val nextHistory = (current.tabHistory + current.activeTab).takeLast(12)
+            persistNavigationState(tab, nextHistory)
             current.copy(
                 activeTab = tab,
-                tabHistory = (current.tabHistory + current.activeTab).takeLast(12)
+                tabHistory = nextHistory
             )
         }
     }
@@ -123,14 +128,15 @@ class AppShellViewModel(
             }
             current.tabHistory.isNotEmpty() -> {
                 val previous = current.tabHistory.last()
-                savedStateHandle[KEY_ACTIVE_TAB] = previous.name
+                val nextHistory = current.tabHistory.dropLast(1)
+                persistNavigationState(previous, nextHistory)
                 _uiState.update {
-                    it.copy(activeTab = previous, tabHistory = it.tabHistory.dropLast(1))
+                    it.copy(activeTab = previous, tabHistory = nextHistory)
                 }
                 true
             }
             current.activeTab != MainTab.RUNNER -> {
-                savedStateHandle[KEY_ACTIVE_TAB] = MainTab.RUNNER.name
+                persistNavigationState(MainTab.RUNNER, emptyList())
                 _uiState.update { it.copy(activeTab = MainTab.RUNNER) }
                 true
             }
@@ -155,7 +161,21 @@ class AppShellViewModel(
         _events.tryEmit(UiEvent.ShowSnackbar(message))
     }
 
+    private fun persistNavigationState(activeTab: MainTab, history: List<MainTab>) {
+        savedStateHandle[KEY_ACTIVE_TAB] = activeTab.name
+        savedStateHandle[KEY_TAB_HISTORY] = history.joinToString(",") { it.name }
+    }
+
+    private data class WorkspaceCounts(
+        val hitsCount: Int,
+        val totalProxiesCount: Int,
+        val aliveProxiesCount: Int,
+        val configsCount: Int,
+        val wordlistsCount: Int
+    )
+
     companion object {
         private const val KEY_ACTIVE_TAB = "active_tab"
+        private const val KEY_TAB_HISTORY = "tab_history"
     }
 }

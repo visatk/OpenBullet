@@ -67,21 +67,14 @@ fun AboutScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ObStatusPill(
-                        text = "API ${Build.VERSION.SDK_INT}",
-                        tintColor = MaterialTheme.colorScheme.primary,
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                    ObStatusPill(
-                        text = "${shellState.configsCount} CFGs • ${shellState.hitsCount} Hits",
-                        tintColor = ObTheme.colors.hit,
-                        containerColor = ObTheme.colors.hitContainer
-                    )
-                }
+                Text(
+                    text = "API ${Build.VERSION.SDK_INT}  ·  ${shellState.configsCount} CFGs  ·  ${shellState.hitsCount} Hits",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontFeatureSettings = "tnum"
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
                 ArchitectureRow("UI", "Jetpack Compose / Material 3 Adaptive")

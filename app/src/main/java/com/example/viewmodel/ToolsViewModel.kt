@@ -1,17 +1,17 @@
 package com.example.viewmodel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.OpenBulletRepository
 import com.example.di.DispatcherProvider
 import com.example.domain.usecase.CleanWordlistUseCase
+import com.example.domain.usecase.CreateWordlistUseCase
 import com.example.domain.usecase.CryptoAndRegexUseCase
 import com.example.domain.usecase.FormatCombosUseCase
+import com.example.domain.usecase.RunNativeDiagnosticUseCase
 import com.example.model.ToolsSection
 import com.example.model.ToolsState
-import com.example.model.WordlistItem
-import com.example.nativeengine.NativeScannerBridge
-import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,10 +28,17 @@ class ToolsViewModel(
     private val cleanWordlistUseCase: CleanWordlistUseCase,
     private val formatCombosUseCase: FormatCombosUseCase,
     private val cryptoAndRegexUseCase: CryptoAndRegexUseCase,
-    private val dispatchers: DispatcherProvider
+    private val dispatchers: DispatcherProvider,
+    private val runNativeDiagnosticUseCase: RunNativeDiagnosticUseCase = RunNativeDiagnosticUseCase(dispatchers),
+    private val createWordlistUseCase: CreateWordlistUseCase = CreateWordlistUseCase(repository),
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ToolsState())
+    private val initialSection = savedStateHandle.get<String>(KEY_ACTIVE_SECTION)
+        ?.let { name -> runCatching { ToolsSection.valueOf(name) }.getOrNull() }
+        ?: ToolsSection.CLEANER
+
+    private val _uiState = MutableStateFlow(ToolsState(activeSection = initialSection))
     val uiState: StateFlow<ToolsState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
@@ -41,6 +48,7 @@ class ToolsViewModel(
     private var cryptoJob: Job? = null
 
     fun selectSection(section: ToolsSection) {
+        savedStateHandle[KEY_ACTIVE_SECTION] = section.name
         _uiState.update { it.copy(activeSection = section) }
     }
 
@@ -116,21 +124,19 @@ class ToolsViewModel(
     }
 
     private fun saveGeneratedWordlist(prefix: String, purpose: String, rawText: String) {
-        val lines = rawText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        if (lines.isEmpty()) return
-        val id = UUID.randomUUID().toString()
         val name = "${prefix}_${System.currentTimeMillis() % 10000}.txt"
-        val item = WordlistItem(
-            id = id,
-            name = name,
-            path = "files://wordlists/$id.txt",
-            type = "Default",
-            lines = lines,
-            purpose = purpose
-        )
         viewModelScope.launch {
-            repository.saveWordlist(item)
-            _events.tryEmit(UiEvent.ShowSnackbar("Saved '$name' (${lines.size} lines) to Wordlists"))
+            val saved = createWordlistUseCase(
+                rawText = rawText,
+                name = name,
+                type = "Default",
+                purpose = purpose,
+                ignoreEmptyLines = true,
+                requireNonEmpty = true
+            ) ?: return@launch
+            _events.tryEmit(
+                UiEvent.ShowSnackbar("Saved '${saved.name}' (${saved.lineCount} lines) to Wordlists")
+            )
         }
     }
 
@@ -211,20 +217,11 @@ class ToolsViewModel(
     fun runNativeScannerTest() {
         val current = _uiState.value
         viewModelScope.launch {
-            val summary = withContext(dispatchers.default) {
-                val startNs = System.nanoTime()
-                val (outcome, matched) = NativeScannerBridge.scanResponseKeys(
-                    body = current.nativeSampleBody,
-                    successKeys = listOf(current.nativeSuccessKey).filter { it.isNotBlank() },
-                    customKeys = emptyList(),
-                    failureKeys = listOf(current.nativeFailureKey).filter { it.isNotBlank() }
-                )
-                val analysis = NativeScannerBridge.analyzeComboLine(
-                    current.nativeSampleBody.lineSequence().firstOrNull().orEmpty()
-                )
-                val elapsedUs = (System.nanoTime() - startNs) / 1000L
-                "Outcome=${outcome.label} | Key=${matched ?: "None"} | FNV1a=${analysis.fnv1aHashHex.take(8)} | ${elapsedUs}us"
-            }
+            val summary = runNativeDiagnosticUseCase(
+                sampleBody = current.nativeSampleBody,
+                successKey = current.nativeSuccessKey,
+                failureKey = current.nativeFailureKey
+            )
             _uiState.update { it.copy(nativeScanSummary = summary) }
         }
     }
@@ -232,5 +229,9 @@ class ToolsViewModel(
     fun copyText(label: String, text: String) {
         if (text.isBlank()) return
         _events.tryEmit(UiEvent.CopyText(label = label, text = text, feedbackMessage = "Copied $label"))
+    }
+
+    companion object {
+        private const val KEY_ACTIVE_SECTION = "tools_active_section"
     }
 }

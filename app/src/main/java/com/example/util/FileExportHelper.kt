@@ -27,10 +27,10 @@ object FileExportHelper {
     }
 
     /**
-     * Shares exported text safely. Writes large or structured exports to cache/exports/ and shares
-     * via FileProvider URI to avoid Binder TransactionTooLargeException.
+     * Shares exported text safely. Writes large or structured exports to cache/exports/ on [Dispatchers.IO]
+     * and shares via FileProvider URI to avoid Binder TransactionTooLargeException and main-thread disk I/O.
      */
-    fun shareTextFile(
+    suspend fun shareTextFile(
         context: Context,
         fileName: String,
         content: String,
@@ -42,16 +42,18 @@ object FileExportHelper {
         }
 
         val safeName = sanitizeFileName(fileName)
-        val fileUri = runCatching {
-            val exportDir = File(context.cacheDir, EXPORTS_DIR).apply { mkdirs() }
-            val outFile = File(exportDir, safeName)
-            outFile.writeText(content, Charsets.UTF_8)
-            FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                outFile
-            )
-        }.getOrNull()
+        val fileUri = withContext(Dispatchers.IO) {
+            runCatching {
+                val exportDir = File(context.cacheDir, EXPORTS_DIR).apply { mkdirs() }
+                val outFile = File(exportDir, safeName)
+                outFile.writeText(content, Charsets.UTF_8)
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    outFile
+                )
+            }.getOrNull()
+        }
 
         val sendIntent = if (fileUri != null) {
             Intent(Intent.ACTION_SEND).apply {
